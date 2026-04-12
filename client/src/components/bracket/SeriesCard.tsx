@@ -15,12 +15,6 @@ function statusBadge(series: PlayoffSeries) {
 }
 
 export function SeriesCard({ series, prediction, onClick }: Props) {
-  const homeWins = (series.winnerId === series.homeTeamId && series.finalSeriesScore)
-    ? parseInt(series.finalSeriesScore.split('-')[0])
-    : series.homeWins;
-  const awayWins = (series.winnerId === series.awayTeamId && series.finalSeriesScore)
-    ? parseInt(series.finalSeriesScore.split('-')[0])
-    : series.awayWins;
 
   const homeIsWinner = series.winnerId === series.homeTeamId;
   const awayIsWinner = series.winnerId === series.awayTeamId;

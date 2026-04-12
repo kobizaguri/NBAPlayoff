@@ -63,7 +63,7 @@ export function BracketView({ series, predictions = [], leagueId }: Props) {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* East */}
-                {(east.length > 0 || round !== 'nbaFinals') && (
+                {east.length > 0 && (
                   <div>
                     {east.length > 0 && (
                       <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">
@@ -84,7 +84,7 @@ export function BracketView({ series, predictions = [], leagueId }: Props) {
                 )}
 
                 {/* West */}
-                {(west.length > 0 || round !== 'nbaFinals') && (
+                {west.length > 0 && (
                   <div>
                     {west.length > 0 && (
                       <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">

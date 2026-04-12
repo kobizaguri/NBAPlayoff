@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { AdminSeriesForm } from '../components/admin/AdminSeriesForm';
 import { AdminSeriesList } from '../components/admin/AdminSeriesList';
 import { adminApi } from '../api/admin';
@@ -15,7 +15,6 @@ export function AdminPage() {
   const [newPassword, setNewPassword] = useState('');
   const [resetMsg, setResetMsg] = useState('');
   const [resetError, setResetError] = useState('');
-  const queryClient = useQueryClient();
 
   const { data: users = [], isLoading: usersLoading } = useQuery({
     queryKey: ['adminUsers'],
