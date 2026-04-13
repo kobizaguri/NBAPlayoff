@@ -6,7 +6,10 @@ let socket: Socket | null = null;
 
 function getSocket(): Socket {
   if (!socket) {
-    socket = io({ path: '/socket.io', transports: ['websocket'] });
+    const serverUrl = import.meta.env.VITE_API_URL
+      ? import.meta.env.VITE_API_URL.replace('/api', '')
+      : undefined;
+    socket = io(serverUrl ?? '', { path: '/socket.io', transports: ['websocket'] });
   }
   return socket;
 }
