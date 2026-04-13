@@ -14,6 +14,7 @@ interface FormState {
   homeOdds: string;
   awayOdds: string;
   deadline: string;
+  seriesMvpPoints: string;
 }
 
 const INITIAL: FormState = {
@@ -26,6 +27,7 @@ const INITIAL: FormState = {
   homeOdds: '',
   awayOdds: '',
   deadline: '',
+  seriesMvpPoints: '0',
 };
 
 export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
@@ -38,6 +40,8 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
   const set = (field: keyof FormState) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
   ) => setForm((f) => ({ ...f, [field]: e.target.value }));
+
+  const isPlayIn = form.round === 'playIn';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,6 +63,7 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
         homeOdds: parseFloat(form.homeOdds),
         awayOdds: parseFloat(form.awayOdds),
         deadline: new Date(form.deadline).toISOString(),
+        seriesMvpPoints: parseInt(form.seriesMvpPoints) || 0,
       });
       queryClient.invalidateQueries({ queryKey: ['series'] });
       setForm(INITIAL);
@@ -82,6 +87,7 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
         <label className="block">
           <span className="text-sm text-gray-600">Round</span>
           <select value={form.round} onChange={set('round')} required className="input mt-1 w-full">
+            <option value="playIn">Play-In</option>
             <option value="firstRound">First Round</option>
             <option value="semis">Conf. Semifinals</option>
             <option value="finals">Conf. Finals</option>
@@ -136,6 +142,22 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
         <span className="text-sm text-gray-600">Prediction Deadline</span>
         <input type="datetime-local" value={form.deadline} onChange={set('deadline')} required className="input mt-1 w-full" />
       </label>
+
+      {/* Series MVP Points — not available for Play-In */}
+      {!isPlayIn && (
+        <label className="block">
+          <span className="text-sm text-gray-600">
+            Series MVP Points <span className="text-gray-400">(0 = disabled)</span>
+          </span>
+          <input
+            type="number"
+            min={0}
+            value={form.seriesMvpPoints}
+            onChange={set('seriesMvpPoints')}
+            className="input mt-1 w-full"
+          />
+        </label>
+      )}
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
       {success && <p className="text-green-600 text-sm">Series created successfully!</p>}

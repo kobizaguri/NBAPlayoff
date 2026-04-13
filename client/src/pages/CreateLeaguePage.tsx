@@ -11,11 +11,18 @@ export function CreateLeaguePage() {
   const [maxMembers, setMaxMembers] = useState(20);
   const [baseWinPoints, setBaseWinPoints] = useState(100);
   const [exactScoreBonus, setExactScoreBonus] = useState(50);
+  const [playInWinPoints, setPlayInWinPoints] = useState(50);
+  const [mvpPoints, setMvpPoints] = useState(100);
+  const [mvpDeadline, setMvpDeadline] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!mvpDeadline) {
+      setError('MVP pick deadline is required');
+      return;
+    }
     setError('');
     setCreating(true);
     try {
@@ -26,6 +33,9 @@ export function CreateLeaguePage() {
         maxMembers,
         baseWinPoints,
         exactScoreBonus,
+        playInWinPoints,
+        mvpPoints,
+        mvpDeadline: new Date(mvpDeadline).toISOString(),
       });
       navigate(`/leagues/${res.data.id}`);
     } catch (err: unknown) {
@@ -122,6 +132,45 @@ export function CreateLeaguePage() {
               <p className="text-xs text-gray-400 mt-1">Flat bonus for correct series score</p>
             </label>
           </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">Play-In Win Points</span>
+              <input
+                type="number"
+                min={0}
+                value={playInWinPoints}
+                onChange={(e) => setPlayInWinPoints(parseInt(e.target.value))}
+                required
+                className="input mt-1 w-full"
+              />
+              <p className="text-xs text-gray-400 mt-1">Flat points for Play-In winner</p>
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">Finals MVP Points</span>
+              <input
+                type="number"
+                min={0}
+                value={mvpPoints}
+                onChange={(e) => setMvpPoints(parseInt(e.target.value))}
+                required
+                className="input mt-1 w-full"
+              />
+              <p className="text-xs text-gray-400 mt-1">Points for correct Finals MVP pick</p>
+            </label>
+          </div>
+
+          <label className="block">
+            <span className="text-sm font-medium text-gray-700">Finals MVP Pick Deadline</span>
+            <input
+              type="datetime-local"
+              value={mvpDeadline}
+              onChange={(e) => setMvpDeadline(e.target.value)}
+              required
+              className="input mt-1 w-full"
+            />
+            <p className="text-xs text-gray-400 mt-1">After this date, picks are locked and visible to all members</p>
+          </label>
 
           {error && (
             <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>

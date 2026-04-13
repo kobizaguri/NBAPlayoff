@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { readStore, writeStore } from '../data/store';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-import { League, LeagueMember, User, Prediction, PlayoffSeries } from '../types';
+import { League, LeagueMember, User, Prediction, PlayoffSeries, LeagueMVPPick } from '../types';
 import { createNotification } from '../services/notifications';
 
 const router = Router();
@@ -45,6 +45,9 @@ const createLeagueSchema = z.object({
   maxMembers: z.number().int().min(20).max(30).default(20),
   baseWinPoints: z.number().positive().default(100),
   exactScoreBonus: z.number().nonnegative().default(50),
+  playInWinPoints: z.number().nonnegative().default(50),
+  mvpPoints: z.number().nonnegative().default(100),
+  mvpDeadline: z.string().datetime(),
 });
 
 router.post('/', requireAuth, (req: AuthRequest, res: Response) => {
@@ -54,7 +57,7 @@ router.post('/', requireAuth, (req: AuthRequest, res: Response) => {
     return;
   }
 
-  const { name, password, isPublic, maxMembers, baseWinPoints, exactScoreBonus } = parsed.data;
+  const { name, password, isPublic, maxMembers, baseWinPoints, exactScoreBonus, playInWinPoints, mvpPoints, mvpDeadline } = parsed.data;
   const leagues = readStore<League>('leagues');
 
   if (leagues.some((l) => l.name.toLowerCase() === name.toLowerCase())) {
@@ -72,6 +75,9 @@ router.post('/', requireAuth, (req: AuthRequest, res: Response) => {
     maxMembers,
     baseWinPoints,
     exactScoreBonus,
+    playInWinPoints,
+    mvpPoints,
+    mvpDeadline,
     createdAt: new Date().toISOString(),
   };
 
@@ -290,12 +296,18 @@ router.get('/:id/leaderboard', requireAuth, (req: AuthRequest, res: Response) =>
   const predictions = readStore<Prediction>('predictions').filter(
     (p) => p.leagueId === req.params.id,
   );
+  const mvpPicks = readStore<LeagueMVPPick>('leagueMvpPicks').filter(
+    (pk) => pk.leagueId === req.params.id,
+  );
   const users = readStore<User>('users');
 
   const entries = members.map((m) => {
     const user = users.find((u) => u.id === m.userId);
     const userPredictions = predictions.filter((p) => p.userId === m.userId);
-    const totalPoints = userPredictions.reduce((sum, p) => sum + p.totalPoints, 0);
+    const seriesPoints = userPredictions.reduce((sum, p) => sum + p.totalPoints, 0);
+    const mvpPick = mvpPicks.find((pk) => pk.userId === m.userId);
+    const mvpPoints = mvpPick?.pointsAwarded ?? 0;
+    const totalPoints = seriesPoints + mvpPoints;
     const correctWinners = userPredictions.filter((p) => p.winnerPoints > 0).length;
     const correctExactScores = userPredictions.filter((p) => p.exactScorePoints > 0).length;
     return {
@@ -320,6 +332,97 @@ router.get('/:id/leaderboard', requireAuth, (req: AuthRequest, res: Response) =>
   });
 
   res.json(ranked);
+});
+
+// ─── GET MVP PICK ─────────────────────────────────────────────────────────────
+
+router.get('/:id/mvp-pick', requireAuth, (req: AuthRequest, res: Response) => {
+  const league = readStore<League>('leagues').find((l) => l.id === req.params.id);
+  if (!league) {
+    res.status(404).json({ error: 'League not found' });
+    return;
+  }
+
+  const members = readStore<LeagueMember>('members');
+  const isMember = members.some((m) => m.leagueId === req.params.id && m.userId === req.user!.userId);
+  if (!isMember && !req.user!.isAdmin) {
+    res.status(403).json({ error: 'Not a member of this league' });
+    return;
+  }
+
+  const allPicks = readStore<LeagueMVPPick>('leagueMvpPicks').filter(
+    (pk) => pk.leagueId === req.params.id,
+  );
+
+  const now = new Date();
+  const deadlinePassed = new Date(league.mvpDeadline) <= now;
+
+  if (deadlinePassed || req.user!.isAdmin) {
+    res.json(allPicks);
+  } else {
+    const myPick = allPicks.find((pk) => pk.userId === req.user!.userId);
+    res.json(myPick ? [myPick] : []);
+  }
+});
+
+// ─── UPSERT MVP PICK ─────────────────────────────────────────────────────────
+
+const mvpPickSchema = z.object({
+  playerName: z.string().min(1).max(100),
+});
+
+router.post('/:id/mvp-pick', requireAuth, (req: AuthRequest, res: Response) => {
+  const league = readStore<League>('leagues').find((l) => l.id === req.params.id);
+  if (!league) {
+    res.status(404).json({ error: 'League not found' });
+    return;
+  }
+
+  const members = readStore<LeagueMember>('members');
+  if (!members.some((m) => m.leagueId === req.params.id && m.userId === req.user!.userId)) {
+    res.status(403).json({ error: 'Not a member of this league' });
+    return;
+  }
+
+  const now = new Date();
+  if (new Date(league.mvpDeadline) <= now) {
+    res.status(403).json({ error: 'MVP pick deadline has passed' });
+    return;
+  }
+
+  const parsed = mvpPickSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.errors[0].message });
+    return;
+  }
+
+  const { playerName } = parsed.data;
+  const picks = readStore<LeagueMVPPick>('leagueMvpPicks');
+  const existingIdx = picks.findIndex(
+    (pk) => pk.leagueId === req.params.id && pk.userId === req.user!.userId,
+  );
+  const nowIso = new Date().toISOString();
+
+  if (existingIdx !== -1) {
+    picks[existingIdx].playerName = playerName.trim();
+    picks[existingIdx].updatedAt = nowIso;
+    writeStore('leagueMvpPicks', picks);
+    res.json(picks[existingIdx]);
+  } else {
+    const pick: LeagueMVPPick = {
+      id: uuidv4(),
+      leagueId: req.params.id,
+      userId: req.user!.userId,
+      playerName: playerName.trim(),
+      isLocked: false,
+      pointsAwarded: 0,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    picks.push(pick);
+    writeStore('leagueMvpPicks', picks);
+    res.status(201).json(pick);
+  }
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

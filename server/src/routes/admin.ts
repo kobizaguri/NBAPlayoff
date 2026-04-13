@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { readStore, writeStore } from '../data/store';
 import { requireAdmin, AuthRequest } from '../middleware/auth';
-import { PlayoffSeries, Prediction, League, User, Notification } from '../types';
+import { PlayoffSeries, Prediction, League, User, Notification, LeagueMVPPick } from '../types';
 import { calculateScore } from '../services/scoring';
 import { createNotification } from '../services/notifications';
 
@@ -13,7 +13,7 @@ const router = Router();
 // ─── Schemas ─────────────────────────────────────────────────────────────────
 
 const createSeriesSchema = z.object({
-  round: z.enum(['firstRound', 'semis', 'finals', 'nbaFinals']),
+  round: z.enum(['playIn', 'firstRound', 'semis', 'finals', 'nbaFinals']),
   conference: z.enum(['east', 'west', 'finals']),
   homeTeamId: z.string().min(1),
   awayTeamId: z.string().min(1),
@@ -24,6 +24,7 @@ const createSeriesSchema = z.object({
   homeOdds: z.number().positive(),
   awayOdds: z.number().positive(),
   deadline: z.string().datetime(),
+  seriesMvpPoints: z.number().nonnegative().default(0),
 });
 
 const updateSeriesSchema = z.object({
@@ -35,6 +36,7 @@ const updateSeriesSchema = z.object({
   awayOdds: z.number().positive().optional(),
   deadline: z.string().datetime().optional(),
   status: z.enum(['pending', 'active']).optional(),
+  seriesMvpPoints: z.number().nonnegative().optional(),
 });
 
 const updateScoreSchema = z.object({
@@ -44,7 +46,8 @@ const updateScoreSchema = z.object({
 
 const completeSeriesSchema = z.object({
   winnerId: z.string().min(1),
-  finalSeriesScore: z.enum(['4-0', '4-1', '4-2', '4-3']),
+  finalSeriesScore: z.enum(['4-0', '4-1', '4-2', '4-3']).optional(),
+  seriesMvpWinner: z.string().max(100).optional(),
 });
 
 // ─── CREATE SERIES ────────────────────────────────────────────────────────────
@@ -147,7 +150,7 @@ router.put('/series/:id/complete', requireAdmin, (req: AuthRequest, res: Respons
     return;
   }
 
-  const { winnerId, finalSeriesScore } = parsed.data;
+  const { winnerId, finalSeriesScore, seriesMvpWinner } = parsed.data;
 
   // Validate winner is one of the two teams
   if (winnerId !== all[idx].homeTeamId && winnerId !== all[idx].awayTeamId) {
@@ -155,9 +158,16 @@ router.put('/series/:id/complete', requireAdmin, (req: AuthRequest, res: Respons
     return;
   }
 
+  // Non-playIn series require a final score
+  if (all[idx].round !== 'playIn' && !finalSeriesScore) {
+    res.status(400).json({ error: 'finalSeriesScore is required for non-Play-In series' });
+    return;
+  }
+
   all[idx].status = 'complete';
   all[idx].winnerId = winnerId;
-  all[idx].finalSeriesScore = finalSeriesScore;
+  if (finalSeriesScore) all[idx].finalSeriesScore = finalSeriesScore;
+  if (seriesMvpWinner) all[idx].seriesMvpWinner = seriesMvpWinner;
   if (!all[idx].oddsLockedAt) all[idx].oddsLockedAt = new Date().toISOString();
   writeStore('series', all);
 
@@ -183,7 +193,7 @@ router.put('/series/:id/complete', requireAdmin, (req: AuthRequest, res: Respons
 
   if (changed) writeStore('predictions', predictions);
 
-  // ── Notify users ──────────────────────────────────────────────────────────
+  // Notify users ──────────────────────────────────────────────────────────
   const users = readStore<User>('users');
   const affectedUserIds = [...new Set(predictions
     .filter((p) => p.seriesId === completedSeries.id)
@@ -197,7 +207,7 @@ router.put('/series/:id/complete', requireAdmin, (req: AuthRequest, res: Respons
       homeTeamName: completedSeries.homeTeamName,
       awayTeamName: completedSeries.awayTeamName,
       winnerId,
-      finalSeriesScore,
+      finalSeriesScore: completedSeries.finalSeriesScore,
     });
   }
 
@@ -265,6 +275,49 @@ router.delete('/series/:id', requireAdmin, (req: AuthRequest, res: Response) => 
   all.splice(idx, 1);
   writeStore('series', all);
   res.sendStatus(204);
+});
+
+// ─── SET FINALS MVP WINNER (per league) ──────────────────────────────────────
+
+router.put('/leagues/:leagueId/finals-mvp', requireAdmin, (req: AuthRequest, res: Response) => {
+  const { leagueId } = req.params;
+  const { playerName } = req.body as { playerName?: string };
+
+  if (!playerName || typeof playerName !== 'string' || !playerName.trim()) {
+    res.status(400).json({ error: 'playerName is required' });
+    return;
+  }
+
+  const leagues = readStore<League>('leagues');
+  const idx = leagues.findIndex((l) => l.id === leagueId);
+  if (idx === -1) {
+    res.status(404).json({ error: 'League not found' });
+    return;
+  }
+
+  leagues[idx].finalsActualMvp = playerName.trim();
+  writeStore('leagues', leagues);
+
+  const league = leagues[idx];
+
+  // Award points to matching picks
+  const picks = readStore<LeagueMVPPick>('leagueMvpPicks');
+  let picksChanged = false;
+  for (let i = 0; i < picks.length; i++) {
+    if (picks[i].leagueId !== leagueId) continue;
+    const match =
+      picks[i].playerName.trim().toLowerCase() === playerName.trim().toLowerCase();
+    picks[i].pointsAwarded = match ? league.mvpPoints : 0;
+    picks[i].updatedAt = new Date().toISOString();
+    picksChanged = true;
+  }
+  if (picksChanged) writeStore('leagueMvpPicks', picks);
+
+  // Emit leaderboard update
+  const io = req.app.get('io');
+  if (io) io.emit('leaderboard:update', { leagueId });
+
+  res.json({ leagueId, finalsActualMvp: playerName.trim() });
 });
 
 // ─── RESET USER PASSWORD ──────────────────────────────────────────────────────

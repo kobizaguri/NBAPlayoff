@@ -12,6 +12,7 @@ interface Props {
 
 const ROUND_ORDER: SeriesRound[] = ['firstRound', 'semis', 'finals', 'nbaFinals'];
 const ROUND_LABELS: Record<SeriesRound, string> = {
+  playIn: 'Play-In Tournament',
   firstRound: 'First Round',
   semis: 'Conference Semifinals',
   finals: 'Conference Finals',
@@ -23,6 +24,15 @@ export function BracketView({ series, predictions = [], leagueId }: Props) {
   const [selectedSeries, setSelectedSeries] = useState<PlayoffSeries | null>(null);
 
   const predictionMap = new Map(predictions.map((p) => [p.seriesId, p]));
+
+  // Play-In games (displayed separately at the top)
+  const playInEast = series
+    .filter((s) => s.round === 'playIn' && s.conference === 'east')
+    .sort((a, b) => a.homeTeamSeed - b.homeTeamSeed);
+  const playInWest = series
+    .filter((s) => s.round === 'playIn' && s.conference === 'west')
+    .sort((a, b) => a.homeTeamSeed - b.homeTeamSeed);
+  const hasPlayIn = playInEast.length > 0 || playInWest.length > 0;
 
   const seriesByRound = ROUND_ORDER.map((round) => ({
     round,
@@ -38,6 +48,52 @@ export function BracketView({ series, predictions = [], leagueId }: Props) {
 
   return (
     <div className="space-y-8">
+      {/* Play-In section */}
+      {hasPlayIn && (
+        <section>
+          <h2 className="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2">
+            <span className="w-1 h-5 bg-orange-500 rounded-full inline-block" />
+            {ROUND_LABELS.playIn}
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {playInEast.length > 0 && (
+              <div>
+                <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                  Eastern Conference
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {playInEast.map((s) => (
+                    <SeriesCard
+                      key={s.id}
+                      series={s}
+                      prediction={predictionMap.get(s.id)}
+                      onClick={isAuthenticated ? () => setSelectedSeries(s) : undefined}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+            {playInWest.length > 0 && (
+              <div>
+                <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                  Western Conference
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {playInWest.map((s) => (
+                    <SeriesCard
+                      key={s.id}
+                      series={s}
+                      prediction={predictionMap.get(s.id)}
+                      onClick={isAuthenticated ? () => setSelectedSeries(s) : undefined}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
       {seriesByRound.map(({ round, label, east, west, finals }) => {
         const hasContent = east.length > 0 || west.length > 0 || finals.length > 0;
         if (!hasContent) return null;

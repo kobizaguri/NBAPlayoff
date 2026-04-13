@@ -21,8 +21,12 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
   const { user } = useAuthStore();
   const queryClient = useQueryClient();
 
+  const isPlayIn = series.round === 'playIn';
+  const hasMvpField = series.seriesMvpPoints > 0 && !isPlayIn;
+
   const [winnerId, setWinnerId] = useState(existingPrediction?.predictedWinnerId ?? '');
   const [score, setScore] = useState(existingPrediction?.predictedSeriesScore ?? '4-0');
+  const [seriesMvp, setSeriesMvp] = useState(existingPrediction?.predictedSeriesMvp ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -37,7 +41,13 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
     setSaving(true);
     setError('');
     try {
-      await predictionsApi.upsert(leagueId, series.id, winnerId, score);
+      await predictionsApi.upsert(
+        leagueId,
+        series.id,
+        winnerId,
+        isPlayIn ? undefined : score,
+        hasMvpField ? seriesMvp || undefined : undefined,
+      );
       queryClient.invalidateQueries({ queryKey: ['predictions', leagueId] });
       onClose();
     } catch (err: unknown) {
@@ -59,12 +69,21 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
         {/* Header */}
         <div className="bg-nba-blue text-white rounded-t-xl px-6 py-4 flex items-center justify-between">
           <div>
-            <h2 className="font-bold text-lg">
-              {series.homeTeamName} vs {series.awayTeamName}
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="font-bold text-lg">
+                {series.homeTeamName} vs {series.awayTeamName}
+              </h2>
+              {isPlayIn && (
+                <span className="text-xs bg-orange-500 text-white px-2 py-0.5 rounded-full font-semibold">
+                  Play-In
+                </span>
+              )}
+            </div>
             <p className="text-sm text-blue-200">
               {series.status === 'complete'
-                ? `Completed — ${series.finalSeriesScore}`
+                ? isPlayIn
+                  ? 'Completed'
+                  : `Completed — ${series.finalSeriesScore}`
                 : locked
                 ? 'Locked — no more predictions'
                 : `Deadline: ${new Date(series.deadline).toLocaleString()}`}
@@ -80,27 +99,29 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
         </div>
 
         <div className="p-6">
-          {/* Odds display */}
-          <div className="flex gap-4 mb-6">
-            {[
-              { teamId: series.homeTeamId, name: series.homeTeamName, seed: series.homeTeamSeed, odds: series.homeOdds, implied: homeImplied },
-              { teamId: series.awayTeamId, name: series.awayTeamName, seed: series.awayTeamSeed, odds: series.awayOdds, implied: awayImplied },
-            ].map((team) => (
-              <div key={team.teamId} className="flex-1 border rounded-lg p-3 text-center">
-                <div className="text-xs text-gray-500 mb-1">#{team.seed}</div>
-                <div className="font-semibold text-gray-800">{team.name}</div>
-                <div className="text-sm text-gray-600 mt-1">
-                  Odds: <span className="font-mono">{team.odds.toFixed(2)}</span>
+          {/* Odds display — not shown for playIn */}
+          {!isPlayIn && (
+            <div className="flex gap-4 mb-6">
+              {[
+                { teamId: series.homeTeamId, name: series.homeTeamName, seed: series.homeTeamSeed, odds: series.homeOdds, implied: homeImplied },
+                { teamId: series.awayTeamId, name: series.awayTeamName, seed: series.awayTeamSeed, odds: series.awayOdds, implied: awayImplied },
+              ].map((team) => (
+                <div key={team.teamId} className="flex-1 border rounded-lg p-3 text-center">
+                  <div className="text-xs text-gray-500 mb-1">#{team.seed}</div>
+                  <div className="font-semibold text-gray-800">{team.name}</div>
+                  <div className="text-sm text-gray-600 mt-1">
+                    Odds: <span className="font-mono">{team.odds.toFixed(2)}</span>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Implied: {team.implied}%
+                  </div>
                 </div>
-                <div className="text-xs text-gray-500">
-                  Implied: {team.implied}%
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
 
-          {/* Current score if active */}
-          {series.status !== 'pending' && (
+          {/* Current score if active (non-playIn) */}
+          {series.status !== 'pending' && !isPlayIn && (
             <div className="text-center mb-4 text-gray-700 font-medium">
               Current score:{' '}
               <span className="font-bold">
@@ -117,9 +138,16 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
                 <p className="font-bold text-gray-800">
                   {existingPrediction.predictedWinnerId === series.homeTeamId
                     ? series.homeTeamName
-                    : series.awayTeamName}{' '}
-                  in {existingPrediction.predictedSeriesScore}
+                    : series.awayTeamName}
+                  {!isPlayIn && existingPrediction.predictedSeriesScore
+                    ? ` in ${existingPrediction.predictedSeriesScore}`
+                    : ''}
                 </p>
+                {existingPrediction.predictedSeriesMvp && (
+                  <p className="text-sm text-gray-600 mt-1">
+                    Series MVP pick: <span className="font-medium">{existingPrediction.predictedSeriesMvp}</span>
+                  </p>
+                )}
                 {existingPrediction.isLocked && existingPrediction.totalPoints > 0 && (
                   <p className="mt-2 text-green-600 font-bold text-lg">
                     +{existingPrediction.totalPoints} pts
@@ -159,27 +187,49 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
                 </div>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Series length
-                </label>
-                <div className="flex gap-2">
-                  {SCORE_OPTIONS.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => setScore(s)}
-                      className={`flex-1 py-2 rounded-lg border-2 font-mono font-medium text-sm transition-colors ${
-                        score === s
-                          ? 'border-nba-blue bg-nba-blue text-white'
-                          : 'border-gray-200 hover:border-nba-blue text-gray-700'
-                      }`}
-                    >
-                      {s}
-                    </button>
-                  ))}
+              {/* Series length — not shown for Play-In */}
+              {!isPlayIn && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Series length
+                  </label>
+                  <div className="flex gap-2">
+                    {SCORE_OPTIONS.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => setScore(s)}
+                        className={`flex-1 py-2 rounded-lg border-2 font-mono font-medium text-sm transition-colors ${
+                          score === s
+                            ? 'border-nba-blue bg-nba-blue text-white'
+                            : 'border-gray-200 hover:border-nba-blue text-gray-700'
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* Series MVP pick — only when enabled */}
+              {hasMvpField && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Series MVP pick{' '}
+                    <span className="text-gray-400 font-normal">
+                      (+{series.seriesMvpPoints} pts if correct)
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    value={seriesMvp}
+                    onChange={(e) => setSeriesMvp(e.target.value)}
+                    placeholder="e.g. LeBron James"
+                    className="input w-full"
+                  />
+                </div>
+              )}
 
               {error && <p className="text-red-600 text-sm">{error}</p>}
 

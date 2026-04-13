@@ -1,5 +1,5 @@
 import api from './client';
-import { League, LeagueMember, LeaderboardEntry } from '../types';
+import { League, LeagueMember, LeaderboardEntry, LeagueMVPPick } from '../types';
 
 interface CreateLeaguePayload {
   name: string;
@@ -8,6 +8,9 @@ interface CreateLeaguePayload {
   maxMembers?: number;
   baseWinPoints?: number;
   exactScoreBonus?: number;
+  playInWinPoints?: number;
+  mvpPoints?: number;
+  mvpDeadline: string;
 }
 
 export const leaguesApi = {
@@ -29,4 +32,9 @@ export const leaguesApi = {
     api.delete(`/leagues/${leagueId}/members/${userId}`),
 
   getLeaderboard: (id: string) => api.get<LeaderboardEntry[]>(`/leagues/${id}/leaderboard`),
+
+  getMvpPicks: (id: string) => api.get<LeagueMVPPick[]>(`/leagues/${id}/mvp-pick`),
+
+  submitMvpPick: (id: string, playerName: string) =>
+    api.post<LeagueMVPPick>(`/leagues/${id}/mvp-pick`, { playerName }),
 };

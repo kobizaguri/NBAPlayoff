@@ -27,6 +27,10 @@ export interface League {
   maxMembers: number; // 20–30
   baseWinPoints: number;
   exactScoreBonus: number;
+  playInWinPoints: number;   // default 50
+  mvpPoints: number;         // default 100
+  mvpDeadline: string;       // ISO datetime
+  finalsActualMvp?: string;  // set by admin after Finals
   createdAt: string;
 }
 
@@ -37,7 +41,7 @@ export interface LeagueMember {
 }
 
 export type SeriesStatus = 'pending' | 'active' | 'complete';
-export type SeriesRound = 'firstRound' | 'semis' | 'finals' | 'nbaFinals';
+export type SeriesRound = 'playIn' | 'firstRound' | 'semis' | 'finals' | 'nbaFinals';
 export type Conference = 'east' | 'west' | 'finals';
 
 export interface PlayoffSeries {
@@ -57,7 +61,9 @@ export interface PlayoffSeries {
   awayWins: number;
   status: SeriesStatus;
   winnerId?: string;
-  finalSeriesScore?: string; // e.g. "4-2"
+  finalSeriesScore?: string; // e.g. "4-2" (not used for playIn)
+  seriesMvpPoints: number;   // default 0 (0 = disabled)
+  seriesMvpWinner?: string;
   deadline: string;
   isLockedManually: boolean;
 }
@@ -68,11 +74,24 @@ export interface Prediction {
   leagueId: string;
   seriesId: string;
   predictedWinnerId: string;
-  predictedSeriesScore: string; // "4-0" | "4-1" | "4-2" | "4-3"
+  predictedSeriesScore?: string; // "4-0" | "4-1" | "4-2" | "4-3" — not applicable for playIn
+  predictedSeriesMvp?: string;   // free-text player name, only when seriesMvpPoints > 0
   isLocked: boolean;
   winnerPoints: number;
   exactScorePoints: number;
+  seriesMvpBonus: number;        // default 0
   totalPoints: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeagueMVPPick {
+  id: string;
+  leagueId: string;
+  userId: string;
+  playerName: string;
+  isLocked: boolean;
+  pointsAwarded: number;
   createdAt: string;
   updatedAt: string;
 }

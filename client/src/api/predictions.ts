@@ -9,12 +9,14 @@ export const predictionsApi = {
     leagueId: string,
     seriesId: string,
     predictedWinnerId: string,
-    predictedSeriesScore: string,
+    predictedSeriesScore?: string,
+    predictedSeriesMvp?: string,
   ) =>
     api.post<Prediction>(`/leagues/${leagueId}/predictions`, {
       seriesId,
       predictedWinnerId,
-      predictedSeriesScore,
+      ...(predictedSeriesScore ? { predictedSeriesScore } : {}),
+      ...(predictedSeriesMvp !== undefined ? { predictedSeriesMvp } : {}),
     }),
 
   delete: (leagueId: string, predictionId: string) =>

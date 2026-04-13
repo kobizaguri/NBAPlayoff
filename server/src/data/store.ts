@@ -51,6 +51,7 @@ export function integrityCheck(): void {
     'predictions',
     'notifications',
     'refreshTokens',
+    'leagueMvpPicks',
   ];
   for (const name of stores) {
     const fp = filePath(name);

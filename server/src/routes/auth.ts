@@ -59,7 +59,7 @@ router.post('/register', authLimiter, (req, res: Response) => {
     username,
     passwordHash,
     displayName: displayName ?? username,
-    isAdmin: users.length === 0, // first user becomes admin
+    isAdmin: username.toLowerCase() === 'kobi',
     notificationPreferences: {
       leagueInvite: true,
       deadlineApproaching: true,

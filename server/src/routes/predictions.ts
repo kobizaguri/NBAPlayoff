@@ -11,7 +11,8 @@ const VALID_SCORES = ['4-0', '4-1', '4-2', '4-3'];
 
 const predictionSchema = z.object({
   predictedWinnerId: z.string().uuid(),
-  predictedSeriesScore: z.enum(['4-0', '4-1', '4-2', '4-3']),
+  predictedSeriesScore: z.enum(['4-0', '4-1', '4-2', '4-3']).optional(),
+  predictedSeriesMvp: z.string().max(100).optional(),
 });
 
 function isDeadlinePassed(series: PlayoffSeries): boolean {
@@ -74,7 +75,7 @@ router.post('/:leagueId/predictions', requireAuth, (req: AuthRequest, res: Respo
     return;
   }
 
-  const { predictedWinnerId, predictedSeriesScore } = parsed.data;
+  const { predictedWinnerId, predictedSeriesScore, predictedSeriesMvp } = parsed.data;
   const { seriesId } = req.body as { seriesId?: string };
   if (!seriesId) {
     res.status(400).json({ error: 'seriesId is required' });
@@ -103,6 +104,12 @@ router.post('/:leagueId/predictions', requireAuth, (req: AuthRequest, res: Respo
     return;
   }
 
+  // Non-playIn series require a series score
+  if (series.round !== 'playIn' && !predictedSeriesScore) {
+    res.status(400).json({ error: 'predictedSeriesScore is required for non-Play-In series' });
+    return;
+  }
+
   const predictions = readStore<Prediction>('predictions');
   const existing = predictions.findIndex(
     (p) => p.userId === req.user!.userId && p.leagueId === leagueId && p.seriesId === seriesId,
@@ -112,7 +119,8 @@ router.post('/:leagueId/predictions', requireAuth, (req: AuthRequest, res: Respo
 
   if (existing !== -1) {
     predictions[existing].predictedWinnerId = predictedWinnerId;
-    predictions[existing].predictedSeriesScore = predictedSeriesScore;
+    if (predictedSeriesScore !== undefined) predictions[existing].predictedSeriesScore = predictedSeriesScore;
+    if (predictedSeriesMvp !== undefined) predictions[existing].predictedSeriesMvp = predictedSeriesMvp;
     predictions[existing].updatedAt = now;
     writeStore('predictions', predictions);
     res.json(predictions[existing]);
@@ -124,9 +132,11 @@ router.post('/:leagueId/predictions', requireAuth, (req: AuthRequest, res: Respo
       seriesId,
       predictedWinnerId,
       predictedSeriesScore,
+      predictedSeriesMvp,
       isLocked: false,
       winnerPoints: 0,
       exactScorePoints: 0,
+      seriesMvpBonus: 0,
       totalPoints: 0,
       createdAt: now,
       updatedAt: now,

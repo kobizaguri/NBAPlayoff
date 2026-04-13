@@ -13,6 +13,7 @@ interface CreateSeriesPayload {
   homeOdds: number;
   awayOdds: number;
   deadline: string;
+  seriesMvpPoints?: number;
 }
 
 export const adminApi = {
@@ -30,11 +31,23 @@ export const adminApi = {
   updateScore: (id: string, homeWins: number, awayWins: number) =>
     api.put<PlayoffSeries>(`/admin/series/${id}/score`, { homeWins, awayWins }),
 
-  completeSeries: (id: string, winnerId: string, finalSeriesScore: string) =>
-    api.put<PlayoffSeries>(`/admin/series/${id}/complete`, { winnerId, finalSeriesScore }),
+  completeSeries: (
+    id: string,
+    winnerId: string,
+    finalSeriesScore?: string,
+    seriesMvpWinner?: string,
+  ) =>
+    api.put<PlayoffSeries>(`/admin/series/${id}/complete`, {
+      winnerId,
+      ...(finalSeriesScore ? { finalSeriesScore } : {}),
+      ...(seriesMvpWinner ? { seriesMvpWinner } : {}),
+    }),
 
   lockSeries: (id: string, locked: boolean) =>
     api.put<PlayoffSeries>(`/admin/series/${id}/lock`, { locked }),
 
   deleteSeries: (id: string) => api.delete(`/admin/series/${id}`),
+
+  setLeagueFinalsMvp: (leagueId: string, playerName: string) =>
+    api.put(`/admin/leagues/${leagueId}/finals-mvp`, { playerName }),
 };

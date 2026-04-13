@@ -4,12 +4,22 @@ import { adminApi } from '../../api/admin';
 import { seriesApi } from '../../api/series';
 import { PlayoffSeries } from '../../types';
 
-const ROUND_LABELS = {
+const ROUND_LABELS: Record<PlayoffSeries['round'], string> = {
+  playIn: 'Play-In Tournament',
   firstRound: 'First Round',
   semis: 'Conference Semifinals',
   finals: 'Conference Finals',
   nbaFinals: 'NBA Finals',
-} as const;
+};
+
+const ROUND_ORDER: PlayoffSeries['round'][] = ['playIn', 'firstRound', 'semis', 'finals', 'nbaFinals'];
+
+interface CompleteEdit {
+  series: PlayoffSeries;
+  winnerId: string;
+  finalScore: string;
+  seriesMvpWinner: string;
+}
 
 export function AdminSeriesList() {
   const queryClient = useQueryClient();
@@ -19,7 +29,7 @@ export function AdminSeriesList() {
   });
 
   const [scoreEdit, setScoreEdit] = useState<{ id: string; homeWins: number; awayWins: number } | null>(null);
-  const [completeEdit, setCompleteEdit] = useState<{ series: PlayoffSeries; winnerId: string; finalScore: string } | null>(null);
+  const [completeEdit, setCompleteEdit] = useState<CompleteEdit | null>(null);
   const [error, setError] = useState('');
 
   const handleUpdateScore = async () => {
@@ -35,12 +45,22 @@ export function AdminSeriesList() {
 
   const handleComplete = async () => {
     if (!completeEdit) return;
-    if (!completeEdit.winnerId || !completeEdit.finalScore) {
-      setError('Please select winner and final score');
+    if (!completeEdit.winnerId) {
+      setError('Please select a winner');
+      return;
+    }
+    const isPlayIn = completeEdit.series.round === 'playIn';
+    if (!isPlayIn && !completeEdit.finalScore) {
+      setError('Please select final score');
       return;
     }
     try {
-      await adminApi.completeSeries(completeEdit.series.id, completeEdit.winnerId, completeEdit.finalScore);
+      await adminApi.completeSeries(
+        completeEdit.series.id,
+        completeEdit.winnerId,
+        isPlayIn ? undefined : completeEdit.finalScore,
+        completeEdit.seriesMvpWinner || undefined,
+      );
       queryClient.invalidateQueries({ queryKey: ['series'] });
       setCompleteEdit(null);
     } catch {
@@ -69,7 +89,7 @@ export function AdminSeriesList() {
 
   if (isLoading) return <p className="text-gray-500">Loading series…</p>;
 
-  const byRound = (['firstRound', 'semis', 'finals', 'nbaFinals'] as const).map((round) => ({
+  const byRound = ROUND_ORDER.map((round) => ({
     round,
     items: allSeries.filter((s) => s.round === round),
   }));
@@ -87,7 +107,12 @@ export function AdminSeriesList() {
         if (items.length === 0) return null;
         return (
           <div key={round}>
-            <h3 className="font-semibold text-gray-700 mb-2">{ROUND_LABELS[round]}</h3>
+            <h3 className="font-semibold text-gray-700 mb-2 flex items-center gap-2">
+              {round === 'playIn' && (
+                <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-semibold">Play-In</span>
+              )}
+              {ROUND_LABELS[round]}
+            </h3>
             <div className="space-y-2">
               {items.map((s) => (
                 <div
@@ -110,27 +135,40 @@ export function AdminSeriesList() {
                         }`}
                       >
                         {s.status === 'complete'
-                          ? `Final: ${s.finalSeriesScore}`
+                          ? s.round === 'playIn'
+                            ? 'Complete'
+                            : `Final: ${s.finalSeriesScore}`
+                          : s.round === 'playIn'
+                          ? s.status
                           : `${s.homeWins}–${s.awayWins}`}
                       </span>
                       {' · '}Deadline: {new Date(s.deadline).toLocaleString()}
                     </p>
                     <p className="text-xs text-gray-400 mt-0.5">
-                      Odds: {s.homeTeamName} {s.homeOdds.toFixed(2)} / {s.awayTeamName} {s.awayOdds.toFixed(2)}
+                      {s.round !== 'playIn' && (
+                        <>Odds: {s.homeTeamName} {s.homeOdds.toFixed(2)} / {s.awayTeamName} {s.awayOdds.toFixed(2)}</>
+                      )}
+                      {s.seriesMvpPoints > 0 && (
+                        <span className="ml-2 text-purple-600">
+                          MVP: {s.seriesMvpPoints} pts{s.seriesMvpWinner ? ` (${s.seriesMvpWinner})` : ''}
+                        </span>
+                      )}
                       {s.isLockedManually && <span className="ml-2 text-red-500 font-medium">🔒 Manually locked</span>}
                     </p>
                   </div>
 
                   {s.status !== 'complete' && (
                     <div className="flex flex-wrap gap-2 shrink-0">
+                      {s.round !== 'playIn' && (
+                        <button
+                          onClick={() => setScoreEdit({ id: s.id, homeWins: s.homeWins, awayWins: s.awayWins })}
+                          className="btn-sm bg-blue-100 text-blue-700 hover:bg-blue-200"
+                        >
+                          Update Score
+                        </button>
+                      )}
                       <button
-                        onClick={() => setScoreEdit({ id: s.id, homeWins: s.homeWins, awayWins: s.awayWins })}
-                        className="btn-sm bg-blue-100 text-blue-700 hover:bg-blue-200"
-                      >
-                        Update Score
-                      </button>
-                      <button
-                        onClick={() => setCompleteEdit({ series: s, winnerId: '', finalScore: '4-0' })}
+                        onClick={() => setCompleteEdit({ series: s, winnerId: '', finalScore: '4-0', seriesMvpWinner: '' })}
                         className="btn-sm bg-green-100 text-green-700 hover:bg-green-200"
                       >
                         Mark Complete
@@ -195,9 +233,12 @@ export function AdminSeriesList() {
       {/* Complete series modal */}
       {completeEdit && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
-            <h3 className="font-bold text-gray-800 mb-4">Complete Series</h3>
-            <label className="block mb-3">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm space-y-4">
+            <h3 className="font-bold text-gray-800">
+              Complete {completeEdit.series.round === 'playIn' ? 'Play-In Game' : 'Series'}
+            </h3>
+
+            <label className="block">
               <span className="text-sm text-gray-600 block mb-1">Winner</span>
               <div className="flex gap-2">
                 {[
@@ -219,28 +260,52 @@ export function AdminSeriesList() {
                 ))}
               </div>
             </label>
-            <label className="block mb-4">
-              <span className="text-sm text-gray-600 block mb-1">Final Score</span>
-              <div className="flex gap-2">
-                {(['4-0', '4-1', '4-2', '4-3'] as const).map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => setCompleteEdit({ ...completeEdit, finalScore: s })}
-                    className={`flex-1 py-2 rounded-lg border-2 font-mono text-sm font-medium transition-colors ${
-                      completeEdit.finalScore === s
-                        ? 'border-nba-blue bg-nba-blue text-white'
-                        : 'border-gray-200 hover:border-nba-blue'
-                    }`}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </label>
+
+            {/* Final score — not for Play-In */}
+            {completeEdit.series.round !== 'playIn' && (
+              <label className="block">
+                <span className="text-sm text-gray-600 block mb-1">Final Score</span>
+                <div className="flex gap-2">
+                  {(['4-0', '4-1', '4-2', '4-3'] as const).map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setCompleteEdit({ ...completeEdit, finalScore: s })}
+                      className={`flex-1 py-2 rounded-lg border-2 font-mono text-sm font-medium transition-colors ${
+                        completeEdit.finalScore === s
+                          ? 'border-nba-blue bg-nba-blue text-white'
+                          : 'border-gray-200 hover:border-nba-blue'
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </label>
+            )}
+
+            {/* Series MVP winner */}
+            {completeEdit.series.seriesMvpPoints > 0 && completeEdit.series.round !== 'playIn' && (
+              <label className="block">
+                <span className="text-sm text-gray-600 block mb-1">
+                  Series MVP Winner{' '}
+                  <span className="text-gray-400 font-normal">
+                    (optional — awards {completeEdit.series.seriesMvpPoints} bonus pts)
+                  </span>
+                </span>
+                <input
+                  type="text"
+                  value={completeEdit.seriesMvpWinner}
+                  onChange={(e) => setCompleteEdit({ ...completeEdit, seriesMvpWinner: e.target.value })}
+                  placeholder="e.g. LeBron James"
+                  className="input w-full"
+                />
+              </label>
+            )}
+
             <div className="flex gap-3">
               <button onClick={() => setCompleteEdit(null)} className="flex-1 btn-outline">Cancel</button>
-              <button onClick={handleComplete} className="flex-1 btn-primary">Complete Series</button>
+              <button onClick={handleComplete} className="flex-1 btn-primary">Complete</button>
             </div>
           </div>
         </div>
