@@ -41,6 +41,9 @@ const NBA_TEAMS: NBATeam[] = [
   { name: 'Portland Trail Blazers',seed: 15, conference: 'west' },
 ];
 
+/** Select value for placeholder team row (must match `selectTeam` branch). */
+const TBD_TEAM_VALUE = 'TBD';
+
 interface FormState {
   round: PlayoffSeries['round'];
   conference: PlayoffSeries['conference'];
@@ -81,7 +84,16 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
   ) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
   const selectTeam = (side: 'home' | 'away') => (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const team = NBA_TEAMS.find((t) => t.name === e.target.value);
+    const v = e.target.value;
+    if (v === TBD_TEAM_VALUE) {
+      setForm((f) => ({
+        ...f,
+        [side === 'home' ? 'homeTeamName' : 'awayTeamName']: 'TBD',
+        [side === 'home' ? 'homeTeamSeed' : 'awayTeamSeed']: side === 'home' ? '8' : '9',
+      }));
+      return;
+    }
+    const team = NBA_TEAMS.find((t) => t.name === v);
     if (!team) return;
     setForm((f) => ({
       ...f,
@@ -166,6 +178,7 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
             className="input mt-1 w-full"
           >
             <option value="">— select team —</option>
+            <option value={TBD_TEAM_VALUE}>TBD (placeholder — edit series later)</option>
             <optgroup label="Eastern Conference">
               {NBA_TEAMS.filter((t) => t.conference === 'east').map((t) => (
                 <option key={t.name} value={t.name}>{t.name}</option>
@@ -187,6 +200,7 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
             className="input mt-1 w-full"
           >
             <option value="">— select team —</option>
+            <option value={TBD_TEAM_VALUE}>TBD (placeholder — edit series later)</option>
             <optgroup label="Eastern Conference">
               {NBA_TEAMS.filter((t) => t.conference === 'east').map((t) => (
                 <option key={t.name} value={t.name}>{t.name}</option>
@@ -200,6 +214,26 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
           </select>
         </label>
       </div>
+
+      <button
+        type="button"
+        className="btn-secondary btn-sm text-xs w-full sm:w-auto"
+        onClick={() =>
+          setForm((f) => ({
+            ...f,
+            homeTeamName: 'TBD',
+            awayTeamName: 'TBD',
+            homeTeamSeed: '8',
+            awayTeamSeed: '9',
+          }))
+        }
+      >
+        Set both teams to TBD placeholders
+      </button>
+      <p className="text-xs text-gray-500 -mt-2">
+        Placeholder rows keep stable team IDs for picks. Update names, seeds, and odds later via{' '}
+        <strong>Edit</strong> on the series list.
+      </p>
 
       {/* Seeds — auto-filled but editable */}
       <div className="grid grid-cols-2 gap-4">

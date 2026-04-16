@@ -350,6 +350,30 @@ router.post('/:id/leave', requireAuth, async (req: AuthRequest, res: Response) =
   }
 });
 
+// ─── DELETE LEAGUE (commissioner or admin) ─────────────────────────────────
+
+router.delete('/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+
+    const isCommissioner = league.commissionerId === req.user!.userId;
+    if (!isCommissioner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'Only the commissioner can delete this league' });
+      return;
+    }
+
+    await leaguesDb.deleteLeague(league.id);
+    req.app.get('io')?.emit('leaderboard:update', { leagueId: league.id });
+    res.sendStatus(204);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // ─── GET MEMBERS ──────────────────────────────────────────────────────────────
 
 router.get('/:id/members', requireAuth, async (req: AuthRequest, res: Response) => {

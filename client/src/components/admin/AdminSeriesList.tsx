@@ -5,6 +5,7 @@ import { seriesApi } from '../../api/series';
 import { PlayoffSeries } from '../../types';
 
 const NBA_TEAMS = [
+  'TBD',
   'Boston Celtics','New York Knicks','Cleveland Cavaliers','Indiana Pacers',
   'Milwaukee Bucks','Detroit Pistons','Miami Heat','Orlando Magic',
   'Chicago Bulls','Atlanta Hawks','Philadelphia 76ers','Toronto Raptors',

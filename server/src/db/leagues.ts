@@ -223,3 +223,20 @@ export async function getMemberCount(leagueId: string): Promise<number> {
   );
   return parseInt(rows[0].count as string, 10);
 }
+
+/** Deletes a league and dependent rows (FKs without ON DELETE CASCADE are cleared first). */
+export async function deleteLeague(leagueId: string): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM predictions WHERE league_id = $1', [leagueId]);
+    await client.query('DELETE FROM league_mvp_picks WHERE league_id = $1', [leagueId]);
+    await client.query('DELETE FROM leagues WHERE id = $1', [leagueId]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}

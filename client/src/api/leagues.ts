@@ -48,6 +48,8 @@ export const leaguesApi = {
 
   leave: (leagueId: string) => api.post(`/leagues/${leagueId}/leave`),
 
+  deleteLeague: (leagueId: string) => api.delete(`/leagues/${leagueId}`),
+
   getLeaderboard: (id: string) => api.get<LeaderboardEntry[]>(`/leagues/${id}/leaderboard`),
 
   getMvpPicks: (id: string) => api.get<LeagueMVPPick[]>(`/leagues/${id}/mvp-pick`),

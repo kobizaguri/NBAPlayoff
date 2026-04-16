@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
 import api from '../api/client';
+import { usersApi } from '../api/users';
 import { UserStats, User } from '../types';
 import { useAuthStore } from '../store/authStore';
 
@@ -14,7 +16,11 @@ const ROUND_LABELS: Record<string, string> = {
 
 export function UserStatsPage() {
   const { id } = useParams<{ id: string }>();
-  const { user: currentUser } = useAuthStore();
+  const { user: currentUser, setUser } = useAuthStore();
+  const queryClient = useQueryClient();
+  const [displayNameDraft, setDisplayNameDraft] = useState('');
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameError, setNameError] = useState('');
 
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['userStats', id],
@@ -28,10 +34,39 @@ export function UserStatsPage() {
     enabled: !!id,
   });
 
+  useEffect(() => {
+    if (profile?.displayName != null) setDisplayNameDraft(profile.displayName);
+  }, [profile?.displayName]);
+
   if (statsLoading || profileLoading) return <LoadingSpinner className="py-20" />;
   if (!stats || !profile) return <p className="text-red-600 text-center py-10">User not found.</p>;
 
   const isOwnProfile = currentUser?.id === id;
+
+  const handleSaveDisplayName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!id) return;
+    const next = displayNameDraft.trim();
+    if (!next) {
+      setNameError('Display name cannot be empty.');
+      return;
+    }
+    setNameError('');
+    setNameSaving(true);
+    try {
+      const { data: updated } = await usersApi.update(id, { displayName: next });
+      setUser(updated);
+      queryClient.setQueryData(['userProfile', id], updated);
+      queryClient.invalidateQueries({ queryKey: ['userProfile', id] });
+    } catch (err: unknown) {
+      setNameError(
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+          'Could not update display name',
+      );
+    } finally {
+      setNameSaving(false);
+    }
+  };
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -51,16 +86,32 @@ export function UserStatsPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{profile.displayName}</h1>
           <p className="text-sm text-gray-500">@{profile.username}</p>
-          {isOwnProfile && (
-            <Link
-              to={`/users/${id}/edit`}
-              className="text-sm text-nba-blue hover:underline mt-1 inline-block"
-            >
-              Edit profile
-            </Link>
-          )}
         </div>
       </div>
+
+      {isOwnProfile && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+          <h2 className="font-semibold text-gray-800 mb-3">Display name</h2>
+          <p className="text-xs text-gray-500 mb-3">This is how you appear in leagues, leaderboards, and member lists.</p>
+          <form onSubmit={handleSaveDisplayName} className="flex flex-col sm:flex-row gap-3 sm:items-end">
+            <label className="flex-1 block">
+              <span className="sr-only">Display name</span>
+              <input
+                type="text"
+                maxLength={50}
+                value={displayNameDraft}
+                onChange={(e) => setDisplayNameDraft(e.target.value)}
+                className="input w-full"
+                placeholder="Your display name"
+              />
+            </label>
+            <button type="submit" disabled={nameSaving} className="btn-primary shrink-0">
+              {nameSaving ? 'Saving…' : 'Save'}
+            </button>
+          </form>
+          {nameError && <p className="text-red-600 text-sm mt-2">{nameError}</p>}
+        </div>
+      )}
 
       {/* Summary stats */}
       <div className="grid grid-cols-3 gap-4">

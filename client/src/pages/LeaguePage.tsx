@@ -119,6 +119,10 @@ export function LeaguePage() {
   const [editCommissionerExtras, setEditCommissionerExtras] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState('');
+  const [deletingLeague, setDeletingLeague] = useState(false);
+  const [deleteLeagueError, setDeleteLeagueError] = useState('');
+  /** Champion title-points table: default low → high; header click toggles. */
+  const [championPointsSort, setChampionPointsSort] = useState<'asc' | 'desc'>('asc');
 
   const { data: league, isLoading: leagueLoading, error: leagueError } = useQuery({
     queryKey: ['league', id],
@@ -187,6 +191,17 @@ export function LeaguePage() {
     }
     return { byUserSeries };
   }, [predictions]);
+
+  const championPointsSorted = useMemo(() => {
+    const rows = championBoard?.teamPointsTable ?? [];
+    if (rows.length === 0) return [];
+    const dir = championPointsSort === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const cmp = (a.points - b.points) * dir;
+      if (cmp !== 0) return cmp;
+      return a.teamName.localeCompare(b.teamName);
+    });
+  }, [championBoard?.teamPointsTable, championPointsSort]);
 
   if (leagueLoading) return <LoadingSpinner className="py-20" />;
   if (leagueError) return <p className="text-red-600 text-center py-10">League not found.</p>;
@@ -642,6 +657,45 @@ export function LeaguePage() {
               </div>
             </>
           )}
+
+          <div className="border-t border-red-100 pt-4 mt-4 space-y-2">
+            <h3 className="text-sm font-semibold text-red-900">Danger zone</h3>
+            <p className="text-xs text-gray-600">
+              Delete this league permanently. All members, picks, MVP picks, and champion data for this league
+              are removed.
+            </p>
+            <button
+              type="button"
+              disabled={deletingLeague}
+              className="btn-danger-outline btn-sm"
+              onClick={async () => {
+                const typed = window.prompt(
+                  `This cannot be undone. Type the league name exactly to confirm:\n\n${league.name}`,
+                );
+                if (typed !== league.name) {
+                  if (typed != null) setDeleteLeagueError('League name did not match.');
+                  return;
+                }
+                setDeleteLeagueError('');
+                setDeletingLeague(true);
+                try {
+                  await leaguesApi.deleteLeague(id!);
+                  await queryClient.invalidateQueries({ queryKey: ['leagues'] });
+                  navigate('/leagues', { replace: true });
+                } catch (err: unknown) {
+                  setDeleteLeagueError(
+                    (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+                      'Could not delete league',
+                  );
+                } finally {
+                  setDeletingLeague(false);
+                }
+              }}
+            >
+              {deletingLeague ? 'Deleting…' : 'Delete league'}
+            </button>
+            {deleteLeagueError && <p className="text-red-600 text-sm">{deleteLeagueError}</p>}
+          </div>
         </div>
       )}
 
@@ -864,11 +918,25 @@ export function LeaguePage() {
                 <thead className="bg-nba-blue text-white">
                   <tr>
                     <th className="text-left px-3 py-2">Team</th>
-                    <th className="text-right px-3 py-2">Points if they win title</th>
+                    <th className="text-right px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setChampionPointsSort((s) => (s === 'asc' ? 'desc' : 'asc'))
+                        }
+                        className="inline-flex w-full items-center justify-end gap-1.5 font-semibold hover:underline cursor-pointer select-none text-white"
+                        title="Click to reverse sort by points"
+                      >
+                        <span>Points if they win title</span>
+                        <span className="tabular-nums opacity-90" aria-hidden>
+                          {championPointsSort === 'asc' ? '↑' : '↓'}
+                        </span>
+                      </button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {championBoard.teamPointsTable.map((row) => (
+                  {championPointsSorted.map((row) => (
                     <tr key={row.teamId}>
                       <td className="px-3 py-2">{row.teamName}</td>
                       <td className="px-3 py-2 text-right font-medium">{row.points}</td>
