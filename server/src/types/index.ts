@@ -31,7 +31,11 @@ export interface League {
   mvpPoints: number;         // default 100
   mvpDeadline: string;       // ISO datetime
   finalsActualMvp?: string;  // set by admin after Finals
+  perfectRoundBonuses: PerfectRoundBonuses;
+  championPickDeadline?: string | null;
   createdAt: string;
+  /** Present on `GET /leagues` list only — whether the current user is in `league_members`. */
+  isMember?: boolean;
 }
 
 export interface LeagueMember {
@@ -43,6 +47,11 @@ export interface LeagueMember {
 export type SeriesStatus = 'pending' | 'active' | 'complete';
 export type SeriesRound = 'playIn' | 'firstRound' | 'semis' | 'finals' | 'nbaFinals';
 export type Conference = 'east' | 'west' | 'finals';
+
+/** Bonus points if a member picks every winner correctly in that round (both conferences). */
+export type PerfectRoundBonuses = Partial<
+  Record<Exclude<SeriesRound, 'playIn'>, number>
+>;
 
 export interface PlayoffSeries {
   id: string;
@@ -64,6 +73,7 @@ export interface PlayoffSeries {
   finalSeriesScore?: string; // e.g. "4-2" (not used for playIn)
   seriesMvpPoints: number;   // default 0 (0 = disabled)
   seriesMvpWinner?: string;
+  winPoints?: number;        // per-series override; null = use league default
   deadline: string;
   isLockedManually: boolean;
 }

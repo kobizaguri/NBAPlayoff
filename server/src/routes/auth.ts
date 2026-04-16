@@ -3,10 +3,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-import { readStore, writeStore } from '../data/store';
 import { authLimiter } from '../middleware/rateLimit';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-import { User, RefreshToken } from '../types';
+import { User } from '../types';
+import * as usersDb from '../db/users';
 
 const router = Router();
 
@@ -38,7 +38,7 @@ const registerSchema = z.object({
   displayName: z.string().min(1).max(50).optional(),
 });
 
-router.post('/register', authLimiter, (req, res: Response) => {
+router.post('/register', authLimiter, async (req, res: Response) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.errors[0].message });
@@ -46,45 +46,38 @@ router.post('/register', authLimiter, (req, res: Response) => {
   }
 
   const { username, password, displayName } = parsed.data;
-  const users = readStore<User>('users');
 
-  if (users.some((u) => u.username.toLowerCase() === username.toLowerCase())) {
-    res.status(409).json({ error: 'Username already taken' });
-    return;
+  try {
+    const existing = await usersDb.getUserByUsername(username);
+    if (existing) {
+      res.status(409).json({ error: 'Username already taken' });
+      return;
+    }
+
+    const passwordHash = bcrypt.hashSync(password, 12);
+    const user = await usersDb.createUser({
+      username,
+      passwordHash,
+      displayName: displayName ?? username,
+      isAdmin: username.toLowerCase() === 'kobi',
+      notificationPreferences: {
+        leagueInvite: true,
+        deadlineApproaching: true,
+        seriesResult: true,
+      },
+    });
+
+    const { accessToken, refreshToken } = generateTokens(user.id, user.isAdmin);
+    await usersDb.saveRefreshToken({
+      token: refreshToken,
+      userId: user.id,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS).toISOString(),
+    });
+
+    res.status(201).json({ accessToken, refreshToken, user: safeUser(user) });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-
-  const passwordHash = bcrypt.hashSync(password, 12);
-  const user: User = {
-    id: uuidv4(),
-    username,
-    passwordHash,
-    displayName: displayName ?? username,
-    isAdmin: username.toLowerCase() === 'kobi',
-    notificationPreferences: {
-      leagueInvite: true,
-      deadlineApproaching: true,
-      seriesResult: true,
-    },
-    createdAt: new Date().toISOString(),
-  };
-
-  users.push(user);
-  writeStore('users', users);
-
-  const { accessToken, refreshToken } = generateTokens(user.id, user.isAdmin);
-  const tokens = readStore<RefreshToken>('refreshTokens');
-  tokens.push({
-    token: refreshToken,
-    userId: user.id,
-    expiresAt: new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS).toISOString(),
-  });
-  writeStore('refreshTokens', tokens);
-
-  res.status(201).json({
-    accessToken,
-    refreshToken,
-    user: safeUser(user),
-  });
 });
 
 // ─── Login ───────────────────────────────────────────────────────────────────
@@ -94,7 +87,7 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
-router.post('/login', authLimiter, (req, res: Response) => {
+router.post('/login', authLimiter, async (req, res: Response) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Username and password are required' });
@@ -102,29 +95,30 @@ router.post('/login', authLimiter, (req, res: Response) => {
   }
 
   const { username, password } = parsed.data;
-  const users = readStore<User>('users');
-  const user = users.find((u) => u.username.toLowerCase() === username.toLowerCase());
 
-  if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
-    res.status(401).json({ error: 'Invalid username or password' });
-    return;
+  try {
+    const user = await usersDb.getUserByUsername(username);
+    if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+      res.status(401).json({ error: 'Invalid username or password' });
+      return;
+    }
+
+    const { accessToken, refreshToken } = generateTokens(user.id, user.isAdmin);
+    await usersDb.saveRefreshToken({
+      token: refreshToken,
+      userId: user.id,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS).toISOString(),
+    });
+
+    res.json({ accessToken, refreshToken, user: safeUser(user) });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-
-  const { accessToken, refreshToken } = generateTokens(user.id, user.isAdmin);
-  const tokens = readStore<RefreshToken>('refreshTokens');
-  tokens.push({
-    token: refreshToken,
-    userId: user.id,
-    expiresAt: new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS).toISOString(),
-  });
-  writeStore('refreshTokens', tokens);
-
-  res.json({ accessToken, refreshToken, user: safeUser(user) });
 });
 
 // ─── Refresh ─────────────────────────────────────────────────────────────────
 
-router.post('/refresh', (req, res: Response) => {
+router.post('/refresh', async (req, res: Response) => {
   const { refreshToken } = req.body as { refreshToken?: string };
   if (!refreshToken) {
     res.status(400).json({ error: 'Refresh token required' });
@@ -139,58 +133,62 @@ router.post('/refresh', (req, res: Response) => {
     return;
   }
 
-  const tokens = readStore<RefreshToken>('refreshTokens');
-  const tokenIndex = tokens.findIndex(
-    (t) => t.token === refreshToken && t.userId === payload.userId,
-  );
-  if (tokenIndex === -1) {
-    res.status(401).json({ error: 'Refresh token not found' });
-    return;
+  try {
+    const stored = await usersDb.findRefreshToken(refreshToken);
+    if (!stored || stored.userId !== payload.userId) {
+      res.status(401).json({ error: 'Refresh token not found' });
+      return;
+    }
+
+    // Rotate — invalidate old token
+    await usersDb.deleteRefreshToken(refreshToken);
+
+    const user = await usersDb.getUserById(payload.userId);
+    if (!user) {
+      res.status(401).json({ error: 'User not found' });
+      return;
+    }
+
+    const { accessToken, refreshToken: newRefreshToken } = generateTokens(user.id, user.isAdmin);
+    await usersDb.saveRefreshToken({
+      token: newRefreshToken,
+      userId: user.id,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS).toISOString(),
+    });
+
+    res.json({ accessToken, refreshToken: newRefreshToken, user: safeUser(user) });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-
-  // Rotate — invalidate old token
-  tokens.splice(tokenIndex, 1);
-
-  const users = readStore<User>('users');
-  const user = users.find((u) => u.id === payload.userId);
-  if (!user) {
-    res.status(401).json({ error: 'User not found' });
-    return;
-  }
-
-  const { accessToken, refreshToken: newRefreshToken } = generateTokens(user.id, user.isAdmin);
-  tokens.push({
-    token: newRefreshToken,
-    userId: user.id,
-    expiresAt: new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS).toISOString(),
-  });
-  writeStore('refreshTokens', tokens);
-
-  res.json({ accessToken, refreshToken: newRefreshToken, user: safeUser(user) });
 });
 
 // ─── Logout ──────────────────────────────────────────────────────────────────
 
-router.post('/logout', (req, res: Response) => {
+router.post('/logout', async (req, res: Response) => {
   const { refreshToken } = req.body as { refreshToken?: string };
   if (refreshToken) {
-    const tokens = readStore<RefreshToken>('refreshTokens');
-    const filtered = tokens.filter((t) => t.token !== refreshToken);
-    writeStore('refreshTokens', filtered);
+    try {
+      await usersDb.deleteRefreshToken(refreshToken);
+    } catch {
+      // ignore errors on logout
+    }
   }
   res.sendStatus(204);
 });
 
 // ─── Me ──────────────────────────────────────────────────────────────────────
 
-router.get('/me', requireAuth, (req: AuthRequest, res: Response) => {
-  const users = readStore<User>('users');
-  const user = users.find((u) => u.id === req.user!.userId);
-  if (!user) {
-    res.status(404).json({ error: 'User not found' });
-    return;
+router.get('/me', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const user = await usersDb.getUserById(req.user!.userId);
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    res.json(safeUser(user));
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-  res.json(safeUser(user));
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

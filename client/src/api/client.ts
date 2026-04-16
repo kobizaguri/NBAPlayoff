@@ -22,6 +22,14 @@ api.interceptors.response.use(
   async (error) => {
     const original = error.config;
     if (error.response?.status === 401 && !original._retry) {
+      // Never queue a refresh behind `refresh()` itself — if this 401 is from
+      // POST /auth/refresh, `refreshPromise` is that same call; awaiting it deadlocks.
+      const reqUrl = String(original.url ?? '');
+      if (reqUrl.includes('/auth/refresh')) {
+        useAuthStore.getState().logout();
+        return Promise.reject(error);
+      }
+
       original._retry = true;
 
       if (!refreshPromise) {

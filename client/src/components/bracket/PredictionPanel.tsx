@@ -9,6 +9,8 @@ interface Props {
   leagueId: string;
   existingPrediction?: Prediction;
   onClose: () => void;
+  baseWinPoints?: number;
+  playInWinPoints?: number;
 }
 
 const SCORE_OPTIONS = ['4-0', '4-1', '4-2', '4-3'] as const;
@@ -17,7 +19,7 @@ function isLocked(series: PlayoffSeries): boolean {
   return series.isLockedManually || new Date(series.deadline) <= new Date();
 }
 
-export function PredictionPanel({ series, leagueId, existingPrediction, onClose }: Props) {
+export function PredictionPanel({ series, leagueId, existingPrediction, onClose, baseWinPoints, playInWinPoints }: Props) {
   const { user } = useAuthStore();
   const queryClient = useQueryClient();
 
@@ -60,8 +62,17 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
     }
   };
 
-  const homeImplied = ((1 / series.homeOdds) * 100).toFixed(1);
-  const awayImplied = ((1 / series.awayOdds) * 100).toFixed(1);
+  function mlToRawProb(odds: number) {
+    return odds < 0 ? (-odds) / (-odds + 100) : 100 / (odds + 100);
+  }
+  const rawHome = mlToRawProb(series.homeOdds);
+  const rawAway = mlToRawProb(series.awayOdds);
+  const vigTotal = rawHome + rawAway;
+  const homeImplied = ((rawHome / vigTotal) * 100).toFixed(1);
+  const awayImplied = ((rawAway / vigTotal) * 100).toFixed(1);
+  const effectiveBase = series.winPoints ?? (isPlayIn ? playInWinPoints : baseWinPoints);
+  const homePts = effectiveBase !== undefined ? Math.round(effectiveBase * (1 - rawHome / vigTotal)) : null;
+  const awayPts = effectiveBase !== undefined ? Math.round(effectiveBase * (1 - rawAway / vigTotal)) : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -103,18 +114,24 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
           {!isPlayIn && (
             <div className="flex gap-4 mb-6">
               {[
-                { teamId: series.homeTeamId, name: series.homeTeamName, seed: series.homeTeamSeed, odds: series.homeOdds, implied: homeImplied },
-                { teamId: series.awayTeamId, name: series.awayTeamName, seed: series.awayTeamSeed, odds: series.awayOdds, implied: awayImplied },
+                { teamId: series.homeTeamId, name: series.homeTeamName, seed: series.homeTeamSeed, odds: series.homeOdds, implied: homeImplied, pts: homePts },
+                { teamId: series.awayTeamId, name: series.awayTeamName, seed: series.awayTeamSeed, odds: series.awayOdds, implied: awayImplied, pts: awayPts },
               ].map((team) => (
                 <div key={team.teamId} className="flex-1 border rounded-lg p-3 text-center">
                   <div className="text-xs text-gray-500 mb-1">#{team.seed}</div>
                   <div className="font-semibold text-gray-800">{team.name}</div>
                   <div className="text-sm text-gray-600 mt-1">
-                    Odds: <span className="font-mono">{team.odds.toFixed(2)}</span>
+                    ML: <span className="font-mono">{team.odds > 0 ? `+${team.odds}` : team.odds}</span>
                   </div>
-                  <div className="text-xs text-gray-500">
-                    Implied: {team.implied}%
-                  </div>
+                  {team.pts !== null ? (
+                    <div className="text-base font-bold text-nba-blue mt-1">
+                      {team.pts} pts
+                    </div>
+                  ) : (
+                    <div className="text-xs text-gray-500">
+                      Win prob: {team.implied}%
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -193,6 +210,11 @@ export function PredictionPanel({ series, leagueId, existingPrediction, onClose 
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Series length
                   </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    If you pick the winner <em>and</em> the right 4-x line, you get upset-weighted winner pts
+                    plus <strong>{effectiveBase ?? '—'}</strong> extra flat pts (same as this series&apos; base,
+                    not odds-based).
+                  </p>
                   <div className="flex gap-2">
                     {SCORE_OPTIONS.map((s) => (
                       <button

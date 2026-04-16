@@ -4,6 +4,43 @@ import { adminApi } from '../../api/admin';
 import { PlayoffSeries } from '../../types';
 import { v4 as uuidv4 } from 'uuid';
 
+interface NBATeam { name: string; seed: number; conference: 'east' | 'west'; }
+
+const NBA_TEAMS: NBATeam[] = [
+  // East
+  { name: 'Boston Celtics',        seed: 1,  conference: 'east' },
+  { name: 'New York Knicks',       seed: 2,  conference: 'east' },
+  { name: 'Cleveland Cavaliers',   seed: 3,  conference: 'east' },
+  { name: 'Indiana Pacers',        seed: 4,  conference: 'east' },
+  { name: 'Milwaukee Bucks',       seed: 5,  conference: 'east' },
+  { name: 'Detroit Pistons',       seed: 6,  conference: 'east' },
+  { name: 'Miami Heat',            seed: 7,  conference: 'east' },
+  { name: 'Orlando Magic',         seed: 8,  conference: 'east' },
+  { name: 'Chicago Bulls',         seed: 9,  conference: 'east' },
+  { name: 'Atlanta Hawks',         seed: 10, conference: 'east' },
+  { name: 'Philadelphia 76ers',    seed: 11, conference: 'east' },
+  { name: 'Toronto Raptors',       seed: 12, conference: 'east' },
+  { name: 'Charlotte Hornets',     seed: 13, conference: 'east' },
+  { name: 'Brooklyn Nets',         seed: 14, conference: 'east' },
+  { name: 'Washington Wizards',    seed: 15, conference: 'east' },
+  // West
+  { name: 'Oklahoma City Thunder', seed: 1,  conference: 'west' },
+  { name: 'Houston Rockets',       seed: 2,  conference: 'west' },
+  { name: 'Los Angeles Lakers',    seed: 3,  conference: 'west' },
+  { name: 'Denver Nuggets',        seed: 4,  conference: 'west' },
+  { name: 'Memphis Grizzlies',     seed: 5,  conference: 'west' },
+  { name: 'Golden State Warriors', seed: 6,  conference: 'west' },
+  { name: 'Minnesota Timberwolves',seed: 7,  conference: 'west' },
+  { name: 'LA Clippers',           seed: 8,  conference: 'west' },
+  { name: 'Dallas Mavericks',      seed: 9,  conference: 'west' },
+  { name: 'Sacramento Kings',      seed: 10, conference: 'west' },
+  { name: 'Phoenix Suns',          seed: 11, conference: 'west' },
+  { name: 'New Orleans Pelicans',  seed: 12, conference: 'west' },
+  { name: 'San Antonio Spurs',     seed: 13, conference: 'west' },
+  { name: 'Utah Jazz',             seed: 14, conference: 'west' },
+  { name: 'Portland Trail Blazers',seed: 15, conference: 'west' },
+];
+
 interface FormState {
   round: PlayoffSeries['round'];
   conference: PlayoffSeries['conference'];
@@ -15,6 +52,7 @@ interface FormState {
   awayOdds: string;
   deadline: string;
   seriesMvpPoints: string;
+  winPoints: string;
 }
 
 const INITIAL: FormState = {
@@ -28,6 +66,7 @@ const INITIAL: FormState = {
   awayOdds: '',
   deadline: '',
   seriesMvpPoints: '0',
+  winPoints: '',
 };
 
 export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
@@ -40,6 +79,16 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
   const set = (field: keyof FormState) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
   ) => setForm((f) => ({ ...f, [field]: e.target.value }));
+
+  const selectTeam = (side: 'home' | 'away') => (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const team = NBA_TEAMS.find((t) => t.name === e.target.value);
+    if (!team) return;
+    setForm((f) => ({
+      ...f,
+      [side === 'home' ? 'homeTeamName' : 'awayTeamName']: team.name,
+      [side === 'home' ? 'homeTeamSeed' : 'awayTeamSeed']: String(team.seed),
+    }));
+  };
 
   const isPlayIn = form.round === 'playIn';
 
@@ -60,10 +109,11 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
         awayTeamName: form.awayTeamName.trim(),
         homeTeamSeed: parseInt(form.homeTeamSeed),
         awayTeamSeed: parseInt(form.awayTeamSeed),
-        homeOdds: parseFloat(form.homeOdds),
-        awayOdds: parseFloat(form.awayOdds),
+        homeOdds: parseInt(form.homeOdds),
+        awayOdds: parseInt(form.awayOdds),
         deadline: new Date(form.deadline).toISOString(),
         seriesMvpPoints: parseInt(form.seriesMvpPoints) || 0,
+        winPoints: form.winPoints ? parseInt(form.winPoints) : undefined,
       });
       queryClient.invalidateQueries({ queryKey: ['series'] });
       setForm(INITIAL);
@@ -105,17 +155,53 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
         </label>
       </div>
 
+      {/* Team dropdowns */}
       <div className="grid grid-cols-2 gap-4">
         <label className="block">
           <span className="text-sm text-gray-600">Home Team</span>
-          <input value={form.homeTeamName} onChange={set('homeTeamName')} required placeholder="e.g. Boston Celtics" className="input mt-1 w-full" />
+          <select
+            value={form.homeTeamName}
+            onChange={selectTeam('home')}
+            required
+            className="input mt-1 w-full"
+          >
+            <option value="">— select team —</option>
+            <optgroup label="Eastern Conference">
+              {NBA_TEAMS.filter((t) => t.conference === 'east').map((t) => (
+                <option key={t.name} value={t.name}>{t.name}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Western Conference">
+              {NBA_TEAMS.filter((t) => t.conference === 'west').map((t) => (
+                <option key={t.name} value={t.name}>{t.name}</option>
+              ))}
+            </optgroup>
+          </select>
         </label>
         <label className="block">
           <span className="text-sm text-gray-600">Away Team</span>
-          <input value={form.awayTeamName} onChange={set('awayTeamName')} required placeholder="e.g. Miami Heat" className="input mt-1 w-full" />
+          <select
+            value={form.awayTeamName}
+            onChange={selectTeam('away')}
+            required
+            className="input mt-1 w-full"
+          >
+            <option value="">— select team —</option>
+            <optgroup label="Eastern Conference">
+              {NBA_TEAMS.filter((t) => t.conference === 'east').map((t) => (
+                <option key={t.name} value={t.name}>{t.name}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Western Conference">
+              {NBA_TEAMS.filter((t) => t.conference === 'west').map((t) => (
+                <option key={t.name} value={t.name}>{t.name}</option>
+              ))}
+            </optgroup>
+          </select>
         </label>
       </div>
 
+      {/* Seeds — auto-filled but editable */}
       <div className="grid grid-cols-2 gap-4">
         <label className="block">
           <span className="text-sm text-gray-600">Home Seed</span>
@@ -129,18 +215,32 @@ export function AdminSeriesForm({ onCreated }: { onCreated?: () => void }) {
 
       <div className="grid grid-cols-2 gap-4">
         <label className="block">
-          <span className="text-sm text-gray-600">Home Odds (decimal)</span>
-          <input type="number" step="0.01" min="1" value={form.homeOdds} onChange={set('homeOdds')} required placeholder="e.g. 1.45" className="input mt-1 w-full" />
+          <span className="text-sm text-gray-600">Home ML Odds</span>
+          <input type="number" step="1" value={form.homeOdds} onChange={set('homeOdds')} required placeholder="e.g. -180 or +160" className="input mt-1 w-full" />
         </label>
         <label className="block">
-          <span className="text-sm text-gray-600">Away Odds (decimal)</span>
-          <input type="number" step="0.01" min="1" value={form.awayOdds} onChange={set('awayOdds')} required placeholder="e.g. 3.10" className="input mt-1 w-full" />
+          <span className="text-sm text-gray-600">Away ML Odds</span>
+          <input type="number" step="1" value={form.awayOdds} onChange={set('awayOdds')} required placeholder="e.g. +160 or -180" className="input mt-1 w-full" />
         </label>
       </div>
 
       <label className="block">
         <span className="text-sm text-gray-600">Prediction Deadline</span>
         <input type="datetime-local" value={form.deadline} onChange={set('deadline')} required className="input mt-1 w-full" />
+      </label>
+
+      <label className="block">
+        <span className="text-sm text-gray-600">
+          Win Points <span className="text-gray-400">(leave blank = use league default)</span>
+        </span>
+        <input
+          type="number"
+          min={1}
+          value={form.winPoints}
+          onChange={set('winPoints')}
+          placeholder="e.g. 100"
+          className="input mt-1 w-full"
+        />
       </label>
 
       {/* Series MVP Points — not available for Play-In */}

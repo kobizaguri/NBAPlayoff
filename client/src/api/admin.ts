@@ -14,6 +14,7 @@ interface CreateSeriesPayload {
   awayOdds: number;
   deadline: string;
   seriesMvpPoints?: number;
+  winPoints?: number;
 }
 
 export const adminApi = {

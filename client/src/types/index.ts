@@ -16,6 +16,12 @@ export interface User {
   createdAt: string;
 }
 
+export type SeriesRound = 'playIn' | 'firstRound' | 'semis' | 'finals' | 'nbaFinals';
+
+export type PerfectRoundBonuses = Partial<
+  Record<Exclude<SeriesRound, 'playIn'>, number>
+>;
+
 export interface League {
   id: string;
   name: string;
@@ -30,7 +36,11 @@ export interface League {
   mvpPoints: number;         // default 100
   mvpDeadline: string;       // ISO datetime
   finalsActualMvp?: string;
+  perfectRoundBonuses?: PerfectRoundBonuses;
+  championPickDeadline?: string | null;
   createdAt: string;
+  /** From `GET /leagues` — whether you are a member (not set on single-league fetch). */
+  isMember?: boolean;
 }
 
 export interface LeagueMember {
@@ -42,7 +52,6 @@ export interface LeagueMember {
 }
 
 export type SeriesStatus = 'pending' | 'active' | 'complete';
-export type SeriesRound = 'playIn' | 'firstRound' | 'semis' | 'finals' | 'nbaFinals';
 export type Conference = 'east' | 'west' | 'finals';
 
 export interface PlayoffSeries {
@@ -65,6 +74,7 @@ export interface PlayoffSeries {
   finalSeriesScore?: string;
   seriesMvpPoints: number;
   seriesMvpWinner?: string;
+  winPoints?: number;        // per-series override; undefined = use league default
   deadline: string;
   isLockedManually: boolean;
 }
@@ -95,6 +105,15 @@ export interface LeagueMVPPick {
   pointsAwarded: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ChampionBoardResponse {
+  championPickDeadline: string | null;
+  championDeadlinePassed: boolean;
+  playoffTeams: { teamId: string; teamName: string }[];
+  teamPointsTable: { teamId: string; teamName: string; points: number }[];
+  myPick: { teamId: string; pointsAwarded: number } | null;
+  nbaChampionTeamId: string | null;
 }
 
 export type NotificationType = 'leagueInvite' | 'deadlineApproaching' | 'seriesResult';

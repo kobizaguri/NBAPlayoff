@@ -4,6 +4,17 @@ import { adminApi } from '../../api/admin';
 import { seriesApi } from '../../api/series';
 import { PlayoffSeries } from '../../types';
 
+const NBA_TEAMS = [
+  'Boston Celtics','New York Knicks','Cleveland Cavaliers','Indiana Pacers',
+  'Milwaukee Bucks','Detroit Pistons','Miami Heat','Orlando Magic',
+  'Chicago Bulls','Atlanta Hawks','Philadelphia 76ers','Toronto Raptors',
+  'Charlotte Hornets','Brooklyn Nets','Washington Wizards',
+  'Oklahoma City Thunder','Houston Rockets','Los Angeles Lakers','Denver Nuggets',
+  'Memphis Grizzlies','Golden State Warriors','Minnesota Timberwolves','LA Clippers',
+  'Dallas Mavericks','Sacramento Kings','Phoenix Suns','New Orleans Pelicans',
+  'San Antonio Spurs','Utah Jazz','Portland Trail Blazers',
+];
+
 const ROUND_LABELS: Record<PlayoffSeries['round'], string> = {
   playIn: 'Play-In Tournament',
   firstRound: 'First Round',
@@ -21,6 +32,28 @@ interface CompleteEdit {
   seriesMvpWinner: string;
 }
 
+interface SeriesEdit {
+  id: string;
+  round: PlayoffSeries['round'];
+  conference: PlayoffSeries['conference'];
+  homeTeamName: string;
+  awayTeamName: string;
+  homeTeamSeed: string;
+  awayTeamSeed: string;
+  homeOdds: string;
+  awayOdds: string;
+  deadline: string;
+  seriesMvpPoints: string;
+  winPoints: string;
+}
+
+function toLocalDatetimeValue(isoString: string): string {
+  // Convert ISO string to the value format required by <input type="datetime-local">
+  const d = new Date(isoString);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function AdminSeriesList() {
   const queryClient = useQueryClient();
   const { data: allSeries = [], isLoading } = useQuery({
@@ -30,6 +63,7 @@ export function AdminSeriesList() {
 
   const [scoreEdit, setScoreEdit] = useState<{ id: string; homeWins: number; awayWins: number } | null>(null);
   const [completeEdit, setCompleteEdit] = useState<CompleteEdit | null>(null);
+  const [seriesEdit, setSeriesEdit] = useState<SeriesEdit | null>(null);
   const [error, setError] = useState('');
 
   const handleUpdateScore = async () => {
@@ -77,6 +111,32 @@ export function AdminSeriesList() {
     }
   };
 
+  const handleEditSeries = async () => {
+    if (!seriesEdit) return;
+    try {
+      await adminApi.updateSeries(seriesEdit.id, {
+        round: seriesEdit.round,
+        conference: seriesEdit.conference,
+        homeTeamName: seriesEdit.homeTeamName.trim(),
+        awayTeamName: seriesEdit.awayTeamName.trim(),
+        homeTeamSeed: parseInt(seriesEdit.homeTeamSeed),
+        awayTeamSeed: parseInt(seriesEdit.awayTeamSeed),
+        homeOdds: parseInt(seriesEdit.homeOdds),
+        awayOdds: parseInt(seriesEdit.awayOdds),
+        deadline: new Date(seriesEdit.deadline).toISOString(),
+        seriesMvpPoints: parseInt(seriesEdit.seriesMvpPoints) || 0,
+        winPoints: seriesEdit.winPoints ? parseInt(seriesEdit.winPoints) : undefined,
+      });
+      queryClient.invalidateQueries({ queryKey: ['series'] });
+      setSeriesEdit(null);
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        'Failed to update series';
+      setError(msg);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this series? This cannot be undone.')) return;
     try {
@@ -120,8 +180,13 @@ export function AdminSeriesList() {
                   className="bg-white border border-gray-200 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
                 >
                   <div>
-                    <p className="font-medium text-gray-800">
+                    <p className="font-medium text-gray-800 flex items-center gap-2">
                       #{s.homeTeamSeed} {s.homeTeamName} vs #{s.awayTeamSeed} {s.awayTeamName}
+                      {s.homeOdds === 2.0 && s.awayOdds === 2.0 && s.status === 'pending' && (
+                        <span className="text-[10px] font-semibold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">
+                          ⚙ Needs configuration
+                        </span>
+                      )}
                     </p>
                     <p className="text-sm text-gray-500">
                       {s.conference.toUpperCase()} ·{' '}
@@ -159,6 +224,27 @@ export function AdminSeriesList() {
 
                   {s.status !== 'complete' && (
                     <div className="flex flex-wrap gap-2 shrink-0">
+                      <button
+                        onClick={() =>
+                          setSeriesEdit({
+                            id: s.id,
+                            round: s.round,
+                            conference: s.conference,
+                            homeTeamName: s.homeTeamName,
+                            awayTeamName: s.awayTeamName,
+                            homeTeamSeed: String(s.homeTeamSeed),
+                            awayTeamSeed: String(s.awayTeamSeed),
+                            homeOdds: String(s.homeOdds),
+                            awayOdds: String(s.awayOdds),
+                            deadline: toLocalDatetimeValue(s.deadline),
+                            seriesMvpPoints: String(s.seriesMvpPoints),
+                            winPoints: s.winPoints != null ? String(s.winPoints) : '',
+                          })
+                        }
+                        className="btn-sm bg-indigo-100 text-indigo-700 hover:bg-indigo-200"
+                      >
+                        Edit
+                      </button>
                       {s.round !== 'playIn' && (
                         <button
                           onClick={() => setScoreEdit({ id: s.id, homeWins: s.homeWins, awayWins: s.awayWins })}
@@ -196,6 +282,103 @@ export function AdminSeriesList() {
 
       {allSeries.length === 0 && (
         <p className="text-gray-500 text-center py-8">No series created yet.</p>
+      )}
+
+      {/* Edit series modal */}
+      {seriesEdit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-lg space-y-4 max-h-[90vh] overflow-y-auto">
+            <h3 className="font-bold text-gray-800 text-lg">Edit Series</h3>
+
+            <div className="grid grid-cols-2 gap-4">
+              <label className="block">
+                <span className="text-sm text-gray-600">Round</span>
+                <select value={seriesEdit.round} onChange={(e) => setSeriesEdit({ ...seriesEdit, round: e.target.value as PlayoffSeries['round'] })} className="input mt-1 w-full">
+                  <option value="playIn">Play-In</option>
+                  <option value="firstRound">First Round</option>
+                  <option value="semis">Conf. Semifinals</option>
+                  <option value="finals">Conf. Finals</option>
+                  <option value="nbaFinals">NBA Finals</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-sm text-gray-600">Conference</span>
+                <select value={seriesEdit.conference} onChange={(e) => setSeriesEdit({ ...seriesEdit, conference: e.target.value as PlayoffSeries['conference'] })} className="input mt-1 w-full">
+                  <option value="east">East</option>
+                  <option value="west">West</option>
+                  <option value="finals">Finals</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <label className="block">
+                <span className="text-sm text-gray-600">Home Team</span>
+                <select value={seriesEdit.homeTeamName} onChange={(e) => setSeriesEdit({ ...seriesEdit, homeTeamName: e.target.value })} className="input mt-1 w-full">
+                  <option value={seriesEdit.homeTeamName}>{seriesEdit.homeTeamName}</option>
+                  {NBA_TEAMS.filter((t) => t !== seriesEdit.homeTeamName).map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-sm text-gray-600">Away Team</span>
+                <select value={seriesEdit.awayTeamName} onChange={(e) => setSeriesEdit({ ...seriesEdit, awayTeamName: e.target.value })} className="input mt-1 w-full">
+                  <option value={seriesEdit.awayTeamName}>{seriesEdit.awayTeamName}</option>
+                  {NBA_TEAMS.filter((t) => t !== seriesEdit.awayTeamName).map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <label className="block">
+                <span className="text-sm text-gray-600">Home Seed</span>
+                <input type="number" min={1} max={16} value={seriesEdit.homeTeamSeed} onChange={(e) => setSeriesEdit({ ...seriesEdit, homeTeamSeed: e.target.value })} className="input mt-1 w-full" />
+              </label>
+              <label className="block">
+                <span className="text-sm text-gray-600">Away Seed</span>
+                <input type="number" min={1} max={16} value={seriesEdit.awayTeamSeed} onChange={(e) => setSeriesEdit({ ...seriesEdit, awayTeamSeed: e.target.value })} className="input mt-1 w-full" />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <label className="block">
+                <span className="text-sm text-gray-600">Home ML Odds</span>
+                <input type="number" step="1" value={seriesEdit.homeOdds} onChange={(e) => setSeriesEdit({ ...seriesEdit, homeOdds: e.target.value })} placeholder="-180 or +160" className="input mt-1 w-full" />
+              </label>
+              <label className="block">
+                <span className="text-sm text-gray-600">Away ML Odds</span>
+                <input type="number" step="1" value={seriesEdit.awayOdds} onChange={(e) => setSeriesEdit({ ...seriesEdit, awayOdds: e.target.value })} placeholder="+160 or -180" className="input mt-1 w-full" />
+              </label>
+            </div>
+
+            <label className="block">
+              <span className="text-sm text-gray-600">Prediction Deadline</span>
+              <input type="datetime-local" value={seriesEdit.deadline} onChange={(e) => setSeriesEdit({ ...seriesEdit, deadline: e.target.value })} className="input mt-1 w-full" />
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-600">
+                Win Points <span className="text-gray-400">(blank = use league default)</span>
+              </span>
+              <input type="number" min={1} value={seriesEdit.winPoints} onChange={(e) => setSeriesEdit({ ...seriesEdit, winPoints: e.target.value })} placeholder="e.g. 100" className="input mt-1 w-full" />
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-gray-600">
+                Series MVP Points <span className="text-gray-400">(0 = disabled)</span>
+              </span>
+              <input type="number" min={0} value={seriesEdit.seriesMvpPoints} onChange={(e) => setSeriesEdit({ ...seriesEdit, seriesMvpPoints: e.target.value })} className="input mt-1 w-full" />
+            </label>
+
+            <div className="flex gap-3 pt-1">
+              <button onClick={() => setSeriesEdit(null)} className="flex-1 btn-outline">Cancel</button>
+              <button onClick={handleEditSeries} className="flex-1 btn-primary">Save Changes</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Score update modal */}

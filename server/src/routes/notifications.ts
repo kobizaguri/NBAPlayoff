@@ -1,51 +1,44 @@
 import { Router, Response } from 'express';
-import { z } from 'zod';
-import { readStore, writeStore } from '../data/store';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-import { Notification } from '../types';
+import * as notificationsDb from '../db/notifications';
 
 const router = Router();
 
 // ─── GET notifications for current user ──────────────────────────────────────
 
-router.get('/', requireAuth, (req: AuthRequest, res: Response) => {
-  const notifications = readStore<Notification>('notifications')
-    .filter((n) => n.userId === req.user!.userId)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-  res.json(notifications);
+router.get('/', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const notifications = await notificationsDb.getNotificationsByUser(req.user!.userId);
+    res.json(notifications);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // ─── MARK as read ─────────────────────────────────────────────────────────────
 
-router.put('/:id/read', requireAuth, (req: AuthRequest, res: Response) => {
-  const notifications = readStore<Notification>('notifications');
-  const idx = notifications.findIndex(
-    (n) => n.id === req.params.id && n.userId === req.user!.userId,
-  );
-  if (idx === -1) {
-    res.status(404).json({ error: 'Notification not found' });
-    return;
+router.put('/:id/read', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const updated = await notificationsDb.markRead(req.params.id, req.user!.userId);
+    if (!updated) {
+      res.status(404).json({ error: 'Notification not found' });
+      return;
+    }
+    res.json(updated);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-  notifications[idx].readAt = new Date().toISOString();
-  writeStore('notifications', notifications);
-  res.json(notifications[idx]);
 });
 
 // ─── MARK ALL as read ─────────────────────────────────────────────────────────
 
-router.put('/read-all', requireAuth, (req: AuthRequest, res: Response) => {
-  const notifications = readStore<Notification>('notifications');
-  const now = new Date().toISOString();
-  let changed = false;
-  for (let i = 0; i < notifications.length; i++) {
-    if (notifications[i].userId === req.user!.userId && !notifications[i].readAt) {
-      notifications[i].readAt = now;
-      changed = true;
-    }
+router.put('/read-all', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    await notificationsDb.markAllRead(req.user!.userId);
+    res.sendStatus(204);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-  if (changed) writeStore('notifications', notifications);
-  res.sendStatus(204);
 });
 
 export default router;

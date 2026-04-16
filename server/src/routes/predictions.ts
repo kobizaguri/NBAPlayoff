@@ -1,9 +1,11 @@
 import { Router, Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-import { readStore, writeStore } from '../data/store';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-import { Prediction, PlayoffSeries, League, LeagueMember } from '../types';
+import { PlayoffSeries } from '../types';
+import pool from '../db';
+import * as predictionsDb from '../db/predictions';
+import * as seriesDb from '../db/series';
+import * as leaguesDb from '../db/leagues';
 
 const router = Router({ mergeParams: true });
 
@@ -21,129 +23,112 @@ function isDeadlinePassed(series: PlayoffSeries): boolean {
 
 // ─── GET predictions for a league ────────────────────────────────────────────
 
-router.get('/:leagueId/predictions', requireAuth, (req: AuthRequest, res: Response) => {
+router.get('/:leagueId/predictions', requireAuth, async (req: AuthRequest, res: Response) => {
   const { leagueId } = req.params;
-  const league = readStore<League>('leagues').find((l) => l.id === leagueId);
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
+
+  try {
+    const league = await leaguesDb.getLeagueById(leagueId);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+
+    const memberCheck = await leaguesDb.isMember(leagueId, req.user!.userId);
+    if (!memberCheck && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'Not a member of this league' });
+      return;
+    }
+
+    const [allPredictions, series] = await Promise.all([
+      predictionsDb.getPredictionsByLeague(leagueId),
+      seriesDb.getAllSeries(),
+    ]);
+
+    // Before deadline: only show the current user's own predictions
+    const result = allPredictions.filter((p) => {
+      const s = series.find((sr) => sr.id === p.seriesId);
+      if (!s) return false;
+      const locked = isDeadlinePassed(s);
+      return locked || p.userId === req.user!.userId || req.user!.isAdmin;
+    });
+
+    res.json(result);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-
-  const members = readStore<LeagueMember>('members');
-  const isMember = members.some((m) => m.leagueId === leagueId && m.userId === req.user!.userId);
-  if (!isMember && !req.user!.isAdmin) {
-    res.status(403).json({ error: 'Not a member of this league' });
-    return;
-  }
-
-  const allPredictions = readStore<Prediction>('predictions').filter(
-    (p) => p.leagueId === leagueId,
-  );
-
-  // Before deadline: only show the current user's own predictions
-  const series = readStore<PlayoffSeries>('series');
-  const result = allPredictions.filter((p) => {
-    const s = series.find((sr) => sr.id === p.seriesId);
-    if (!s) return false;
-    const locked = isDeadlinePassed(s);
-    return locked || p.userId === req.user!.userId || req.user!.isAdmin;
-  });
-
-  res.json(result);
 });
 
 // ─── UPSERT prediction ────────────────────────────────────────────────────────
 
-router.post('/:leagueId/predictions', requireAuth, (req: AuthRequest, res: Response) => {
+router.post('/:leagueId/predictions', requireAuth, async (req: AuthRequest, res: Response) => {
   const { leagueId } = req.params;
 
-  const league = readStore<League>('leagues').find((l) => l.id === leagueId);
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
-  }
+  try {
+    const league = await leaguesDb.getLeagueById(leagueId);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
 
-  const members = readStore<LeagueMember>('members');
-  if (!members.some((m) => m.leagueId === leagueId && m.userId === req.user!.userId)) {
-    res.status(403).json({ error: 'Not a member of this league' });
-    return;
-  }
+    const memberCheck = await leaguesDb.isMember(leagueId, req.user!.userId);
+    if (!memberCheck) {
+      res.status(403).json({ error: 'Not a member of this league' });
+      return;
+    }
 
-  const parsed = predictionSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.errors[0].message });
-    return;
-  }
+    const parsed = predictionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.errors[0].message });
+      return;
+    }
 
-  const { predictedWinnerId, predictedSeriesScore, predictedSeriesMvp } = parsed.data;
-  const { seriesId } = req.body as { seriesId?: string };
-  if (!seriesId) {
-    res.status(400).json({ error: 'seriesId is required' });
-    return;
-  }
+    const { predictedWinnerId, predictedSeriesScore, predictedSeriesMvp } = parsed.data;
+    const { seriesId } = req.body as { seriesId?: string };
+    if (!seriesId) {
+      res.status(400).json({ error: 'seriesId is required' });
+      return;
+    }
 
-  const series = readStore<PlayoffSeries>('series').find((s) => s.id === seriesId);
-  if (!series) {
-    res.status(404).json({ error: 'Series not found' });
-    return;
-  }
+    const series = await seriesDb.getSeriesById(seriesId);
+    if (!series) {
+      res.status(404).json({ error: 'Series not found' });
+      return;
+    }
 
-  if (series.status === 'complete') {
-    res.status(403).json({ error: 'Series is already complete' });
-    return;
-  }
+    if (series.status === 'complete') {
+      res.status(403).json({ error: 'Series is already complete' });
+      return;
+    }
 
-  if (isDeadlinePassed(series)) {
-    res.status(403).json({ error: 'Prediction deadline has passed' });
-    return;
-  }
+    if (isDeadlinePassed(series)) {
+      res.status(403).json({ error: 'Prediction deadline has passed' });
+      return;
+    }
 
-  // Validate predicted winner is one of the two teams
-  if (predictedWinnerId !== series.homeTeamId && predictedWinnerId !== series.awayTeamId) {
-    res.status(400).json({ error: 'Predicted winner must be one of the two competing teams' });
-    return;
-  }
+    // Validate predicted winner is one of the two teams
+    if (predictedWinnerId !== series.homeTeamId && predictedWinnerId !== series.awayTeamId) {
+      res.status(400).json({ error: 'Predicted winner must be one of the two competing teams' });
+      return;
+    }
 
-  // Non-playIn series require a series score
-  if (series.round !== 'playIn' && !predictedSeriesScore) {
-    res.status(400).json({ error: 'predictedSeriesScore is required for non-Play-In series' });
-    return;
-  }
+    // Non-playIn series require a series score
+    if (series.round !== 'playIn' && !predictedSeriesScore) {
+      res.status(400).json({ error: 'predictedSeriesScore is required for non-Play-In series' });
+      return;
+    }
 
-  const predictions = readStore<Prediction>('predictions');
-  const existing = predictions.findIndex(
-    (p) => p.userId === req.user!.userId && p.leagueId === leagueId && p.seriesId === seriesId,
-  );
-
-  const now = new Date().toISOString();
-
-  if (existing !== -1) {
-    predictions[existing].predictedWinnerId = predictedWinnerId;
-    if (predictedSeriesScore !== undefined) predictions[existing].predictedSeriesScore = predictedSeriesScore;
-    if (predictedSeriesMvp !== undefined) predictions[existing].predictedSeriesMvp = predictedSeriesMvp;
-    predictions[existing].updatedAt = now;
-    writeStore('predictions', predictions);
-    res.json(predictions[existing]);
-  } else {
-    const prediction: Prediction = {
-      id: uuidv4(),
+    const prediction = await predictionsDb.upsertPrediction({
       userId: req.user!.userId,
       leagueId,
       seriesId,
       predictedWinnerId,
       predictedSeriesScore,
       predictedSeriesMvp,
-      isLocked: false,
-      winnerPoints: 0,
-      exactScorePoints: 0,
-      seriesMvpBonus: 0,
-      totalPoints: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
-    predictions.push(prediction);
-    writeStore('predictions', predictions);
+    });
+
     res.status(201).json(prediction);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
@@ -152,28 +137,31 @@ router.post('/:leagueId/predictions', requireAuth, (req: AuthRequest, res: Respo
 router.delete(
   '/:leagueId/predictions/:predictionId',
   requireAuth,
-  (req: AuthRequest, res: Response) => {
+  async (req: AuthRequest, res: Response) => {
     const { leagueId, predictionId } = req.params;
-    const predictions = readStore<Prediction>('predictions');
-    const idx = predictions.findIndex(
-      (p) => p.id === predictionId && p.userId === req.user!.userId && p.leagueId === leagueId,
-    );
-    if (idx === -1) {
-      res.status(404).json({ error: 'Prediction not found' });
-      return;
-    }
 
-    const series = readStore<PlayoffSeries>('series').find(
-      (s) => s.id === predictions[idx].seriesId,
-    );
-    if (series && isDeadlinePassed(series)) {
-      res.status(403).json({ error: 'Cannot delete a locked prediction' });
-      return;
-    }
+    try {
+      const { rows } = await pool.query(
+        'SELECT * FROM predictions WHERE id=$1 AND user_id=$2 AND league_id=$3',
+        [predictionId, req.user!.userId, leagueId],
+      );
 
-    predictions.splice(idx, 1);
-    writeStore('predictions', predictions);
-    res.sendStatus(204);
+      if (!rows[0]) {
+        res.status(404).json({ error: 'Prediction not found' });
+        return;
+      }
+
+      const series = await seriesDb.getSeriesById(rows[0].series_id as string);
+      if (series && isDeadlinePassed(series)) {
+        res.status(403).json({ error: 'Cannot delete a locked prediction' });
+        return;
+      }
+
+      await predictionsDb.deletePrediction(predictionId);
+      res.sendStatus(204);
+    } catch {
+      res.status(500).json({ error: 'Database error' });
+    }
   },
 );
 

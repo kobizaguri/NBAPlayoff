@@ -8,6 +8,10 @@
     "build": "npm run build --prefix server && npm run build --prefix client"
   },
   "devDependencies": {
+    "@types/pg": "^8.20.0",
     "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "pg": "^8.20.0"
   }
 }

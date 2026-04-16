@@ -25,9 +25,9 @@ export function useSocket() {
     const s = getSocket();
 
     s.on('leaderboard:update', () => {
-      // Invalidate all leaderboard queries
       queryClient.invalidateQueries({ queryKey: ['leaderboard'] });
       queryClient.invalidateQueries({ queryKey: ['predictions'] });
+      queryClient.invalidateQueries({ queryKey: ['championBoard'] });
     });
 
     s.on('series:update', () => {
@@ -37,6 +37,7 @@ export function useSocket() {
     s.on('series:complete', () => {
       queryClient.invalidateQueries({ queryKey: ['series'] });
       queryClient.invalidateQueries({ queryKey: ['leaderboard'] });
+      queryClient.invalidateQueries({ queryKey: ['championBoard'] });
     });
 
     return () => {

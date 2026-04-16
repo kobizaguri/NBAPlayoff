@@ -1,9 +1,23 @@
 import { PlayoffSeries, Prediction } from '../../types';
 
+function mlToRawProb(odds: number) {
+  return odds < 0 ? (-odds) / (-odds + 100) : 100 / (odds + 100);
+}
+
+function calcPts(odds: number, homeOdds: number, awayOdds: number, base: number): number {
+  const rawHome = mlToRawProb(homeOdds);
+  const rawAway = mlToRawProb(awayOdds);
+  const total = rawHome + rawAway;
+  const prob = mlToRawProb(odds) / total;
+  return Math.round(base * (1 - prob));
+}
+
 interface Props {
   series: PlayoffSeries;
   prediction?: Prediction;
   onClick?: () => void;
+  baseWinPoints?: number;
+  playInWinPoints?: number;
 }
 
 function statusBadge(series: PlayoffSeries) {
@@ -14,7 +28,9 @@ function statusBadge(series: PlayoffSeries) {
   return <span className="badge bg-yellow-600">Open</span>;
 }
 
-export function SeriesCard({ series, prediction, onClick }: Props) {
+export function SeriesCard({ series, prediction, onClick, baseWinPoints, playInWinPoints }: Props) {
+  // Per-series winPoints override takes priority over league defaults
+  const effectiveBase = series.winPoints ?? (series.round === 'playIn' ? playInWinPoints : baseWinPoints);
 
   const homeIsWinner = series.winnerId === series.homeTeamId;
   const awayIsWinner = series.winnerId === series.awayTeamId;
@@ -24,16 +40,17 @@ export function SeriesCard({ series, prediction, onClick }: Props) {
 
   return (
     <button
+      type="button"
       onClick={onClick}
-      className="w-full text-left bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md hover:border-nba-blue transition-all p-3 group"
+      className="w-full min-w-0 text-left bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md hover:border-nba-blue transition-all p-2 sm:p-2.5 group"
     >
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between gap-1 mb-1.5 min-w-0">
         {statusBadge(series)}
         {prediction && (
-          <span className="text-xs text-gray-500">
+          <span className="text-[10px] sm:text-xs text-gray-500 shrink-0 truncate max-w-[42%] text-right">
             {prediction.isLocked && prediction.totalPoints > 0
-              ? <span className="text-green-600 font-bold">+{prediction.totalPoints}pts</span>
-              : <span className="text-blue-600">Predicted</span>}
+              ? <span className="text-green-600 font-bold">+{prediction.totalPoints.toFixed(1)}</span>
+              : <span className="text-blue-600">Pred.</span>}
           </span>
         )}
       </div>
@@ -74,14 +91,27 @@ export function SeriesCard({ series, prediction, onClick }: Props) {
         </span>
       </div>
 
-      {/* Odds row */}
-      <div className="flex justify-between mt-2 border-t border-gray-100 pt-1">
-        <span className="text-xs text-gray-400">
-          {series.homeTeamName.split(' ').pop()}: {series.homeOdds.toFixed(2)}
-        </span>
-        <span className="text-xs text-gray-400">
-          {series.awayTeamName.split(' ').pop()}: {series.awayOdds.toFixed(2)}
-        </span>
+      {/* Bottom row: pts per team (league view) or ML odds (public view) */}
+      <div className="flex justify-between gap-1 mt-1.5 border-t border-gray-100 pt-1 min-w-0">
+        {effectiveBase !== undefined ? (
+          <>
+            <span className="text-[10px] sm:text-xs text-nba-blue font-semibold truncate max-w-[48%]">
+              {series.homeTeamName.split(' ').pop()}: {calcPts(series.homeOdds, series.homeOdds, series.awayOdds, effectiveBase)}pts
+            </span>
+            <span className="text-[10px] sm:text-xs text-nba-blue font-semibold truncate max-w-[48%] text-right">
+              {series.awayTeamName.split(' ').pop()}: {calcPts(series.awayOdds, series.homeOdds, series.awayOdds, effectiveBase)}pts
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="text-[10px] sm:text-xs text-gray-400 truncate max-w-[48%]">
+              {series.homeTeamName.split(' ').pop()}: {series.homeOdds > 0 ? `+${series.homeOdds}` : series.homeOdds}
+            </span>
+            <span className="text-[10px] sm:text-xs text-gray-400 truncate max-w-[48%] text-right">
+              {series.awayTeamName.split(' ').pop()}: {series.awayOdds > 0 ? `+${series.awayOdds}` : series.awayOdds}
+            </span>
+          </>
+        )}
       </div>
     </button>
   );

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useParams, Link, Navigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useParams, Link, Navigate, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { leaguesApi } from '../api/leagues';
 import { seriesApi } from '../api/series';
@@ -10,11 +10,92 @@ import { Leaderboard } from '../components/league/Leaderboard';
 import { MemberList } from '../components/league/MemberList';
 import { BracketView } from '../components/bracket/BracketView';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
+import type { ChampionBoardResponse, League, PerfectRoundBonuses, PlayoffSeries, Prediction } from '../types';
 
-type Tab = 'bracket' | 'leaderboard' | 'members' | 'mvp';
+function commissionerExtrasConfigured(league: League, championBoard: ChampionBoardResponse | undefined): boolean {
+  const pr = league.perfectRoundBonuses ?? {};
+  const hasPerfect = [pr.firstRound, pr.semis, pr.finals, pr.nbaFinals].some(
+    (v) => typeof v === 'number' && v > 0,
+  );
+  const nChampTeams = championBoard?.teamPointsTable.length ?? 0;
+  return hasPerfect || !!league.championPickDeadline || nChampTeams > 0;
+}
+
+/** Read-only summary of perfect-round bonuses and champion pick deadline (same for every member). */
+function LeagueExtrasReadOnlySummary({ league }: { league: League }) {
+  return (
+    <div className="rounded-lg bg-gray-50 border border-gray-100 px-4 py-3 text-sm text-gray-800 space-y-2">
+      <p className="font-medium text-gray-900">Current settings</p>
+      <ul className="list-disc list-inside space-y-1 text-gray-700">
+        {[
+          league.perfectRoundBonuses?.firstRound,
+          league.perfectRoundBonuses?.semis,
+          league.perfectRoundBonuses?.finals,
+          league.perfectRoundBonuses?.nbaFinals,
+        ].every((v) => !(typeof v === 'number' && v > 0)) && (
+          <li>Perfect-round bonuses: none configured</li>
+        )}
+        {(league.perfectRoundBonuses?.firstRound ?? 0) > 0 && (
+          <li>
+            First round (all 8 series): <strong>{league.perfectRoundBonuses?.firstRound}</strong> pts if perfect
+          </li>
+        )}
+        {(league.perfectRoundBonuses?.semis ?? 0) > 0 && (
+          <li>
+            Conference semifinals (2nd round): <strong>{league.perfectRoundBonuses?.semis}</strong> pts if perfect
+          </li>
+        )}
+        {(league.perfectRoundBonuses?.finals ?? 0) > 0 && (
+          <li>
+            Conference finals: <strong>{league.perfectRoundBonuses?.finals}</strong> pts if perfect
+          </li>
+        )}
+        {(league.perfectRoundBonuses?.nbaFinals ?? 0) > 0 && (
+          <li>
+            NBA Finals: <strong>{league.perfectRoundBonuses?.nbaFinals}</strong> pts if perfect
+          </li>
+        )}
+        <li>
+          Champion pick deadline:{' '}
+          {league.championPickDeadline ? (
+            <strong>{new Date(league.championPickDeadline).toLocaleString()}</strong>
+          ) : (
+            <strong>not set</strong>
+          )}{' '}
+          {!league.championPickDeadline && <span className="text-gray-500">(champion picks off)</span>}
+        </li>
+      </ul>
+    </div>
+  );
+}
+
+type Tab = 'bracket' | 'picks' | 'leaderboard' | 'members' | 'mvp' | 'champion';
+
+function seriesLocked(s: PlayoffSeries): boolean {
+  return s.isLockedManually || new Date(s.deadline) <= new Date();
+}
+
+function compareSeries(a: PlayoffSeries, b: PlayoffSeries): number {
+  const order = ['playIn', 'firstRound', 'semis', 'finals', 'nbaFinals'] as const;
+  const ai = order.indexOf(a.round);
+  const bi = order.indexOf(b.round);
+  if (ai !== bi) return ai - bi;
+  const confRank: Record<string, number> = { east: 0, west: 1, finals: 2 };
+  const ca = confRank[a.conference] ?? 9;
+  const cb = confRank[b.conference] ?? 9;
+  if (ca !== cb) return ca - cb;
+  return a.id.localeCompare(b.id);
+}
+
+function winnerLabel(s: PlayoffSeries, winnerId: string): string {
+  if (winnerId === s.homeTeamId) return s.homeTeamName;
+  if (winnerId === s.awayTeamId) return s.awayTeamName;
+  return '—';
+}
 
 export function LeaguePage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { user } = useAuthStore();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<Tab>('bracket');
@@ -23,6 +104,21 @@ export function LeaguePage() {
   const [mvpPickError, setMvpPickError] = useState('');
   const [finalsMvpInput, setFinalsMvpInput] = useState('');
   const [finalsMvpSaving, setFinalsMvpSaving] = useState(false);
+
+  const [prFirst, setPrFirst] = useState('');
+  const [prSemis, setPrSemis] = useState('');
+  const [prFinals, setPrFinals] = useState('');
+  const [prNbaFinals, setPrNbaFinals] = useState('');
+  const [championDlLocal, setChampionDlLocal] = useState('');
+  const [leagueSettingsSaving, setLeagueSettingsSaving] = useState(false);
+  const [championTeamId, setChampionTeamId] = useState('');
+  const [championSaving, setChampionSaving] = useState(false);
+  const [championErr, setChampionErr] = useState('');
+  const [championRows, setChampionRows] = useState<{ teamId: string; points: string }[]>([]);
+  const [championPointsSaving, setChampionPointsSaving] = useState(false);
+  const [editCommissionerExtras, setEditCommissionerExtras] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState('');
 
   const { data: league, isLoading: leagueLoading, error: leagueError } = useQuery({
     queryKey: ['league', id],
@@ -59,6 +155,39 @@ export function LeaguePage() {
     enabled: !!id,
   });
 
+  const canSeeChampionBoard =
+    !!id && (user?.isAdmin === true || members.some((m) => m.userId === user?.id));
+
+  const { data: championBoard, isLoading: championLoading } = useQuery({
+    queryKey: ['championBoard', id],
+    queryFn: () => leaguesApi.getChampionBoard(id!).then((r) => r.data),
+    enabled: canSeeChampionBoard,
+  });
+
+  const { data: mvpPlayerOptions } = useQuery({
+    queryKey: ['mvpPlayerOptions'],
+    queryFn: () => leaguesApi.getMvpPlayerOptions().then((r) => r.data.players),
+  });
+
+  const myMvpPickName = useMemo(
+    () => mvpPicks.find((pk) => pk.userId === user?.id)?.playerName,
+    [mvpPicks, user?.id],
+  );
+
+  useEffect(() => {
+    if (myMvpPickName) setMvpPickInput(myMvpPickName);
+  }, [myMvpPickName]);
+
+  const sortedSeries = useMemo(() => [...series].sort(compareSeries), [series]);
+
+  const pickMatrix = useMemo(() => {
+    const byUserSeries = new Map<string, Prediction>();
+    for (const p of predictions) {
+      byUserSeries.set(`${p.userId}:${p.seriesId}`, p);
+    }
+    return { byUserSeries };
+  }, [predictions]);
+
   if (leagueLoading) return <LoadingSpinner className="py-20" />;
   if (leagueError) return <p className="text-red-600 text-center py-10">League not found.</p>;
   if (!league) return <Navigate to="/leagues" replace />;
@@ -68,6 +197,19 @@ export function LeaguePage() {
 
   const mvpDeadlinePassed = new Date(league.mvpDeadline) <= new Date();
   const myMvpPick = mvpPicks.find((pk) => pk.userId === user?.id);
+
+  const syncLeagueSettingsForm = () => {
+    const pr = league.perfectRoundBonuses ?? {};
+    setPrFirst(pr.firstRound != null ? String(pr.firstRound) : '');
+    setPrSemis(pr.semis != null ? String(pr.semis) : '');
+    setPrFinals(pr.finals != null ? String(pr.finals) : '');
+    setPrNbaFinals(pr.nbaFinals != null ? String(pr.nbaFinals) : '');
+    setChampionDlLocal(
+      league.championPickDeadline
+        ? new Date(league.championPickDeadline).toISOString().slice(0, 16)
+        : '',
+    );
+  };
 
   const handleSubmitMvpPick = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,7 +223,7 @@ export function LeaguePage() {
     } catch (err: unknown) {
       setMvpPickError(
         (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
-        'Failed to save pick',
+          'Failed to save pick',
       );
     } finally {
       setMvpPickSaving(false);
@@ -98,18 +240,108 @@ export function LeaguePage() {
       queryClient.invalidateQueries({ queryKey: ['mvpPicks', id] });
       queryClient.invalidateQueries({ queryKey: ['leaderboard', id] });
       setFinalsMvpInput('');
-    } catch { /* silent */ } finally {
+    } catch {
+      /* silent */
+    } finally {
       setFinalsMvpSaving(false);
     }
   };
 
+  const saveLeagueBonuses = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLeagueSettingsSaving(true);
+    try {
+      const perfectRoundBonuses: PerfectRoundBonuses = { ...(league.perfectRoundBonuses ?? {}) };
+      const apply = (key: keyof PerfectRoundBonuses, raw: string) => {
+        const t = raw.trim();
+        if (t === '') {
+          delete perfectRoundBonuses[key];
+          return;
+        }
+        const n = parseInt(t, 10);
+        if (!Number.isNaN(n) && n >= 0) perfectRoundBonuses[key] = n;
+      };
+      apply('firstRound', prFirst);
+      apply('semis', prSemis);
+      apply('finals', prFinals);
+      apply('nbaFinals', prNbaFinals);
+
+      await leaguesApi.update(id!, {
+        perfectRoundBonuses,
+        championPickDeadline: championDlLocal
+          ? new Date(championDlLocal).toISOString()
+          : null,
+      });
+      queryClient.invalidateQueries({ queryKey: ['league', id] });
+      queryClient.invalidateQueries({ queryKey: ['leaderboard', id] });
+      setEditCommissionerExtras(false);
+    } finally {
+      setLeagueSettingsSaving(false);
+    }
+  };
+
+  const handleChampionPick = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!championTeamId) return;
+    setChampionSaving(true);
+    setChampionErr('');
+    try {
+      await leaguesApi.submitChampionPick(id!, championTeamId);
+      queryClient.invalidateQueries({ queryKey: ['championBoard', id] });
+      queryClient.invalidateQueries({ queryKey: ['leaderboard', id] });
+    } catch (err: unknown) {
+      setChampionErr(
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+          'Failed to save',
+      );
+    } finally {
+      setChampionSaving(false);
+    }
+  };
+
+  const saveChampionPoints = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChampionPointsSaving(true);
+    try {
+      const rows = championRows
+        .map((r) => ({ teamId: r.teamId, points: parseInt(r.points, 10) }))
+        .filter((r) => r.teamId && !Number.isNaN(r.points) && r.points > 0);
+      await leaguesApi.setChampionTeamPoints(id!, rows);
+      queryClient.invalidateQueries({ queryKey: ['championBoard', id] });
+      queryClient.invalidateQueries({ queryKey: ['leaderboard', id] });
+      setEditCommissionerExtras(false);
+    } finally {
+      setChampionPointsSaving(false);
+    }
+  };
+
+  const tabLabel = (tab: Tab) => {
+    switch (tab) {
+      case 'bracket':
+        return '🏀 Bracket';
+      case 'picks':
+        return '👁 League picks';
+      case 'leaderboard':
+        return '🏆 Leaderboard';
+      case 'members':
+        return '👥 Members';
+      case 'mvp':
+        return '🌟 MVP';
+      case 'champion':
+        return '🏆 Champion';
+      default:
+        return tab;
+    }
+  };
+
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
-      {/* Header */}
+    <div className="w-full max-w-full mx-auto space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <div className="flex items-center gap-2 text-sm text-gray-500 mb-1">
-            <Link to="/leagues" className="hover:text-nba-blue">Leagues</Link>
+            <Link to="/leagues" className="hover:text-nba-blue">
+              Leagues
+            </Link>
             <span>/</span>
             <span>{league.name}</span>
           </div>
@@ -118,7 +350,11 @@ export function LeaguePage() {
             <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
               Code: <span className="font-mono font-bold">{league.inviteCode}</span>
             </span>
-            <span className={`text-xs px-2 py-1 rounded-full font-medium ${league.isPublic ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+            <span
+              className={`text-xs px-2 py-1 rounded-full font-medium ${
+                league.isPublic ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
+              }`}
+            >
               {league.isPublic ? 'Public' : 'Private'}
             </span>
             <span className="text-xs bg-blue-50 text-nba-blue px-2 py-1 rounded-full">
@@ -130,40 +366,366 @@ export function LeaguePage() {
               </span>
             )}
           </div>
+          {isMember && !isCommissioner && (
+            <div className="mt-3">
+              <button
+                type="button"
+                disabled={leaving}
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      'Leave this league? Your picks, MVP pick, champion pick, and bonus points for this league will be removed.',
+                    )
+                  ) {
+                    return;
+                  }
+                  setLeaveError('');
+                  setLeaving(true);
+                  try {
+                    await leaguesApi.leave(id!);
+                    await queryClient.invalidateQueries({ queryKey: ['leagues'] });
+                    await queryClient.invalidateQueries({ queryKey: ['league', id] });
+                    navigate('/leagues', { replace: true });
+                  } catch (err: unknown) {
+                    setLeaveError(
+                      (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+                        'Could not leave league',
+                    );
+                  } finally {
+                    setLeaving(false);
+                  }
+                }}
+                className="btn-danger-outline"
+              >
+                {leaving ? 'Leaving…' : 'Leave league'}
+              </button>
+              {leaveError && <p className="text-red-600 text-sm mt-2">{leaveError}</p>}
+            </div>
+          )}
         </div>
 
         <div className="text-sm text-gray-500 text-right">
-          <p>Base: <strong>{league.baseWinPoints}</strong> pts</p>
-          <p>Score bonus: <strong>{league.exactScoreBonus}</strong> pts</p>
-          <p>Play-In: <strong>{league.playInWinPoints}</strong> pts</p>
-          <p>Finals MVP: <strong>{league.mvpPoints}</strong> pts</p>
+          <p>
+            Base: <strong>{league.baseWinPoints}</strong> pts
+          </p>
+          <p className="text-xs max-w-xs ml-auto">
+            Correct 4-x (4-0 … 4-3): <strong>+{league.baseWinPoints}</strong> flat pts (same scale as base win;
+            per-series overrides use that series&apos; win points)
+          </p>
+          <p>
+            Play-In: <strong>{league.playInWinPoints}</strong> pts
+          </p>
+          <p>
+            Finals MVP: <strong>{league.mvpPoints}</strong> pts
+          </p>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
-        {(['bracket', 'leaderboard', 'members', 'mvp'] as Tab[]).map((tab) => (
+      {isMember && commissionerExtrasConfigured(league, championBoard) && (
+        <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-3">
+          <h2 className="font-semibold text-gray-800">League scoring extras</h2>
+          <p className="text-xs text-gray-500">
+            Perfect-round bonuses and champion pick deadline. Only the commissioner can change these.
+          </p>
+          <LeagueExtrasReadOnlySummary league={league} />
+        </div>
+      )}
+
+      {isCommissioner && (
+        <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h2 className="font-semibold text-gray-800">Commissioner — scoring extras</h2>
+            {commissionerExtrasConfigured(league, championBoard) && !editCommissionerExtras ? (
+              <button
+                type="button"
+                onClick={() => {
+                  syncLeagueSettingsForm();
+                  setChampionRows(
+                    (championBoard?.teamPointsTable ?? []).map((r) => ({
+                      teamId: r.teamId,
+                      points: String(r.points),
+                    })),
+                  );
+                  setEditCommissionerExtras(true);
+                }}
+                className="text-sm font-medium text-nba-blue hover:underline"
+              >
+                Edit settings
+              </button>
+            ) : commissionerExtrasConfigured(league, championBoard) && editCommissionerExtras ? (
+              <button
+                type="button"
+                onClick={() => setEditCommissionerExtras(false)}
+                className="text-sm font-medium text-gray-600 hover:underline"
+              >
+                Done
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={syncLeagueSettingsForm}
+                className="text-sm text-nba-blue hover:underline"
+              >
+                Load current values
+              </button>
+            )}
+          </div>
+
+          {(!commissionerExtrasConfigured(league, championBoard) || editCommissionerExtras) && (
+            <>
+              <p className="text-xs text-gray-500">
+                Perfect rounds: bonus if a member gets every series winner in that round right (both
+                conferences). Champion: set a pick deadline, then assign title points per playoff team — only
+                teams you list appear to members.
+              </p>
+              <form onSubmit={saveLeagueBonuses} className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <label className="block text-sm">
+                    <span className="text-gray-600">Perfect 1st round</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="input mt-1 w-full"
+                      placeholder="blank = leave unchanged"
+                      value={prFirst}
+                      onChange={(e) => setPrFirst(e.target.value)}
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-gray-600">Perfect 2nd round (semis)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="input mt-1 w-full"
+                      placeholder="blank = leave unchanged"
+                      value={prSemis}
+                      onChange={(e) => setPrSemis(e.target.value)}
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-gray-600">Perfect conf. finals</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="input mt-1 w-full"
+                      placeholder="blank = leave unchanged"
+                      value={prFinals}
+                      onChange={(e) => setPrFinals(e.target.value)}
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-gray-600">Perfect NBA Finals</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="input mt-1 w-full"
+                      placeholder="blank = leave unchanged"
+                      value={prNbaFinals}
+                      onChange={(e) => setPrNbaFinals(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Clear a number field and save to remove that round&apos;s perfect bonus. Filled fields overwrite
+                  saved values.
+                </p>
+                <label className="block text-sm max-w-md">
+                  <span className="text-gray-600">Champion pick deadline</span>
+                  <input
+                    type="datetime-local"
+                    className="input mt-1 w-full"
+                    value={championDlLocal}
+                    onChange={(e) => setChampionDlLocal(e.target.value)}
+                  />
+                  <span className="text-xs text-gray-400">Clear field and save to disable champion picks.</span>
+                </label>
+                <button type="submit" disabled={leagueSettingsSaving} className="btn-primary">
+                  {leagueSettingsSaving ? 'Saving…' : 'Save perfect rounds & champion deadline'}
+                </button>
+              </form>
+
+              <div className="border-t border-gray-100 pt-4 space-y-3">
+                <h3 className="font-semibold text-gray-800 text-sm">
+                  Champion — points if this team wins the title
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Add one row per team. Only teams with a positive point value appear in the Champion tab. Save
+                  applies title scoring when the Finals winner is known (and updates the leaderboard).
+                </p>
+                {championLoading && <p className="text-sm text-gray-500">Loading playoff teams…</p>}
+                {!championLoading && championBoard && championBoard.playoffTeams.length === 0 && (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                    Add <strong>first-round</strong> series in Admin so playoff teams appear here.
+                  </p>
+                )}
+                {!championLoading && championBoard && championBoard.playoffTeams.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      className="text-sm text-nba-blue"
+                      onClick={() =>
+                        setChampionRows([
+                          ...championRows,
+                          { teamId: championBoard.playoffTeams[0]?.teamId ?? '', points: '' },
+                        ])
+                      }
+                    >
+                      + Add team row
+                    </button>
+                    <form onSubmit={saveChampionPoints} className="space-y-2">
+                      {championRows.map((row, idx) => (
+                        <div key={idx} className="flex gap-2 flex-wrap items-end">
+                          <label className="flex-1 min-w-[140px]">
+                            <span className="text-xs text-gray-500">Team</span>
+                            <select
+                              className="input w-full mt-0.5"
+                              value={row.teamId}
+                              onChange={(e) => {
+                                const next = [...championRows];
+                                next[idx] = { ...next[idx], teamId: e.target.value };
+                                setChampionRows(next);
+                              }}
+                            >
+                              <option value="">—</option>
+                              {championBoard.playoffTeams.map((t) => (
+                                <option key={t.teamId} value={t.teamId}>
+                                  {t.teamName}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="w-28">
+                            <span className="text-xs text-gray-500">Points</span>
+                            <input
+                              type="number"
+                              min={1}
+                              className="input w-full mt-0.5"
+                              value={row.points}
+                              onChange={(e) => {
+                                const next = [...championRows];
+                                next[idx] = { ...next[idx], points: e.target.value };
+                                setChampionRows(next);
+                              }}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="text-sm text-red-600 mb-1"
+                            onClick={() => setChampionRows(championRows.filter((_, i) => i !== idx))}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                      <div className="flex gap-2 pt-2 flex-wrap">
+                        <button type="submit" disabled={championPointsSaving} className="btn-primary">
+                          {championPointsSaving ? 'Saving…' : 'Save champion title points'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() =>
+                            setChampionRows(
+                              (championBoard.teamPointsTable ?? []).map((r) => ({
+                                teamId: r.teamId,
+                                points: String(r.points),
+                              })),
+                            )
+                          }
+                        >
+                          Load from saved table
+                        </button>
+                      </div>
+                    </form>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-1 bg-gray-100 p-1 rounded-xl w-fit max-w-full overflow-x-auto">
+        {(['bracket', 'picks', 'leaderboard', 'members', 'mvp', 'champion'] as Tab[]).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
               activeTab === tab
                 ? 'bg-white text-nba-blue shadow-sm'
                 : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            {tab === 'bracket' ? '🏀 Bracket' : tab === 'leaderboard' ? '🏆 Leaderboard' : tab === 'members' ? '👥 Members' : '🌟 MVP'}
+            {tabLabel(tab)}
           </button>
         ))}
       </div>
 
-      {/* Tab content */}
       {activeTab === 'bracket' && (
         <BracketView
           series={series}
           predictions={isMember ? predictions.filter((p) => p.userId === user?.id) : []}
           leagueId={id}
+          baseWinPoints={league.baseWinPoints}
+          playInWinPoints={league.playInWinPoints}
         />
+      )}
+
+      {activeTab === 'picks' && isMember && (
+        <div className="bg-white border border-gray-200 rounded-xl p-4 overflow-x-auto">
+          <p className="text-sm text-gray-600 mb-3">
+            Picks for other members appear after each series deadline (same time picks lock).
+          </p>
+          <table className="min-w-full text-xs sm:text-sm border-collapse">
+            <thead>
+              <tr>
+                <th className="text-left p-2 border-b bg-gray-50 sticky left-0 z-10">Member</th>
+                {sortedSeries.map((s) => (
+                  <th
+                    key={s.id}
+                    className="p-2 border-b bg-gray-50 text-left font-normal min-w-[120px] max-w-[160px]"
+                  >
+                    <div className="font-medium text-gray-800 truncate" title={s.homeTeamName}>
+                      {s.homeTeamName}
+                    </div>
+                    <div className="text-gray-400 truncate">vs {s.awayTeamName}</div>
+                    <div className="text-[10px] text-gray-400 uppercase mt-0.5">{s.round}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {members.map((m) => (
+                <tr key={m.userId} className="border-b border-gray-100">
+                  <td className="p-2 font-medium text-gray-800 sticky left-0 bg-white z-10 whitespace-nowrap">
+                    {m.displayName}
+                  </td>
+                  {sortedSeries.map((s) => {
+                    const locked = seriesLocked(s);
+                    const pred = pickMatrix.byUserSeries.get(`${m.userId}:${s.id}`);
+                    return (
+                      <td key={s.id} className="p-2 align-top text-gray-700">
+                        {locked ? (
+                          pred ? (
+                            <span>{winnerLabel(s, pred.predictedWinnerId)}</span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )
+                        ) : (
+                          <span className="text-gray-400 italic">Hidden</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {activeTab === 'picks' && !isMember && (
+        <p className="text-gray-500 text-center py-8">Join this league to see the picks grid.</p>
       )}
 
       {activeTab === 'leaderboard' && (
@@ -182,27 +744,35 @@ export function LeaguePage() {
 
       {activeTab === 'mvp' && (
         <div className="space-y-6">
-          {/* Finals MVP actual result */}
           {league.finalsActualMvp && (
             <div className="bg-yellow-50 border border-yellow-200 rounded-xl px-5 py-4">
               <p className="text-sm text-yellow-700 font-medium">
-                Finals MVP: <span className="font-bold text-yellow-900">{league.finalsActualMvp}</span>
+                Finals MVP:{' '}
+                <span className="font-bold text-yellow-900">{league.finalsActualMvp}</span>
               </p>
             </div>
           )}
 
-          {/* Admin set Finals MVP */}
           {user?.isAdmin && (
             <div className="bg-white border border-gray-200 rounded-xl p-5">
               <h3 className="font-semibold text-gray-800 mb-3">Set Finals MVP (Admin)</h3>
-              <form onSubmit={handleSetFinalsMvp} className="flex gap-3">
-                <input
-                  type="text"
+              <p className="text-xs text-gray-500 mb-2">
+                Must match the same candidate list members use (exact name).
+              </p>
+              <form onSubmit={handleSetFinalsMvp} className="flex flex-col sm:flex-row gap-3">
+                <select
+                  required
+                  className="input flex-1"
                   value={finalsMvpInput}
                   onChange={(e) => setFinalsMvpInput(e.target.value)}
-                  placeholder="e.g. LeBron James"
-                  className="input flex-1"
-                />
+                >
+                  <option value="">Select player…</option>
+                  {(mvpPlayerOptions ?? []).map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
                 <button type="submit" disabled={finalsMvpSaving} className="btn-primary shrink-0">
                   {finalsMvpSaving ? 'Saving…' : 'Set MVP'}
                 </button>
@@ -210,7 +780,6 @@ export function LeaguePage() {
             </div>
           )}
 
-          {/* Current user's MVP pick */}
           {isMember && (
             <div className="bg-white border border-gray-200 rounded-xl p-5">
               <h3 className="font-semibold text-gray-800 mb-1">Your Finals MVP Pick</h3>
@@ -229,14 +798,20 @@ export function LeaguePage() {
                   <p className="text-gray-500 text-sm">No pick submitted before the deadline.</p>
                 )
               ) : (
-                <form onSubmit={handleSubmitMvpPick} className="flex gap-3">
-                  <input
-                    type="text"
+                <form onSubmit={handleSubmitMvpPick} className="flex flex-col sm:flex-row gap-3">
+                  <select
+                    required
+                    className="input flex-1"
                     value={mvpPickInput}
                     onChange={(e) => setMvpPickInput(e.target.value)}
-                    placeholder={myMvpPick ? myMvpPick.playerName : 'e.g. LeBron James'}
-                    className="input flex-1"
-                  />
+                  >
+                    <option value="">Choose a player…</option>
+                    {(mvpPlayerOptions ?? []).map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
                   <button type="submit" disabled={mvpPickSaving} className="btn-primary shrink-0">
                     {mvpPickSaving ? 'Saving…' : myMvpPick ? 'Update' : 'Submit'}
                   </button>
@@ -246,13 +821,12 @@ export function LeaguePage() {
             </div>
           )}
 
-          {/* All picks (after deadline) */}
           {mvpDeadlinePassed && mvpPicks.length > 0 && (
             <div className="bg-white border border-gray-200 rounded-xl p-5">
               <h3 className="font-semibold text-gray-800 mb-3">All Member Picks</h3>
               <ul className="divide-y divide-gray-100">
                 {mvpPicks.map((pk) => {
-                  const member = members.find((m) => m.userId === pk.userId);
+                  const member = members.find((mem) => mem.userId === pk.userId);
                   return (
                     <li key={pk.id} className="py-2 flex items-center justify-between">
                       <span className="text-gray-700">{member?.displayName ?? pk.userId}</span>
@@ -269,6 +843,105 @@ export function LeaguePage() {
             </div>
           )}
         </div>
+      )}
+
+      {activeTab === 'champion' && isMember && championLoading && (
+        <LoadingSpinner className="py-12" />
+      )}
+
+      {activeTab === 'champion' && isMember && championBoard && !championLoading && (
+        <div className="space-y-6">
+          <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <h3 className="font-semibold text-gray-800 mb-2">Champion points (this league)</h3>
+            <p className="text-sm text-gray-500 mb-3">
+              Only teams listed here appear in the table. Points can be edited anytime; totals update when the
+              NBA Finals winner is known.
+            </p>
+            {championBoard.teamPointsTable.length === 0 ? (
+              <p className="text-sm text-gray-500">No team rows yet — commissioner can add them below.</p>
+            ) : (
+              <table className="min-w-full text-sm border rounded-lg overflow-hidden">
+                <thead className="bg-nba-blue text-white">
+                  <tr>
+                    <th className="text-left px-3 py-2">Team</th>
+                    <th className="text-right px-3 py-2">Points if they win title</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {championBoard.teamPointsTable.map((row) => (
+                    <tr key={row.teamId}>
+                      <td className="px-3 py-2">{row.teamName}</td>
+                      <td className="px-3 py-2 text-right font-medium">{row.points}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {championBoard.nbaChampionTeamId && (
+              <p className="text-xs text-gray-500 mt-2">
+                NBA champion resolved — picks have been scored against this winner.
+              </p>
+            )}
+          </div>
+
+          {isMember && league.championPickDeadline && (
+            <div className="bg-white border border-gray-200 rounded-xl p-5">
+              <h3 className="font-semibold text-gray-800 mb-1">Your champion pick</h3>
+              <p className="text-sm text-gray-500 mb-3">
+                Deadline: {new Date(league.championPickDeadline).toLocaleString()}
+              </p>
+              {championBoard.championDeadlinePassed ? (
+                championBoard.myPick ? (
+                  <p className="text-gray-800">
+                    You picked{' '}
+                    <strong>
+                      {championBoard.playoffTeams.find((t) => t.teamId === championBoard.myPick?.teamId)
+                        ?.teamName ?? 'team'}
+                    </strong>
+                    {championBoard.myPick.pointsAwarded > 0 && (
+                      <span className="text-green-600 font-bold ml-2">
+                        +{championBoard.myPick.pointsAwarded} pts
+                      </span>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-gray-500 text-sm">No pick before the deadline.</p>
+                )
+              ) : (
+                <form onSubmit={handleChampionPick} className="space-y-3 max-w-md">
+                  <select
+                    className="input w-full"
+                    value={championTeamId}
+                    onChange={(e) => setChampionTeamId(e.target.value)}
+                    required
+                  >
+                    <option value="">Select a playoff team</option>
+                    {championBoard.playoffTeams.map((t) => (
+                      <option key={t.teamId} value={t.teamId}>
+                        {t.teamName}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="submit" disabled={championSaving} className="btn-primary">
+                    {championSaving ? 'Saving…' : 'Save pick'}
+                  </button>
+                  {championErr && <p className="text-red-600 text-sm">{championErr}</p>}
+                </form>
+              )}
+            </div>
+          )}
+
+          {isCommissioner && (
+            <p className="text-xs text-gray-500 border-t border-gray-100 pt-4">
+              To edit title points per team, use <strong>Edit settings</strong> in the commissioner box above
+              (or open this tab to see the public table).
+            </p>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'champion' && !isMember && (
+        <p className="text-gray-500 text-center py-8">Join this league to use champion picks.</p>
       )}
     </div>
   );

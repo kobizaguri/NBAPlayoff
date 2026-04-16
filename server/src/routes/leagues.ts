@@ -2,17 +2,30 @@ import { Router, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-import { readStore, writeStore } from '../data/store';
+import { League } from '../types';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-import { League, LeagueMember, User, Prediction, PlayoffSeries, LeagueMVPPick } from '../types';
 import { createNotification } from '../services/notifications';
+import * as leaguesDb from '../db/leagues';
+import * as seriesDb from '../db/series';
+import * as predictionsDb from '../db/predictions';
+import * as mvpPicksDb from '../db/leagueMvpPicks';
+import * as usersDb from '../db/users';
+import { getPerfectRoundSumByUser } from '../db/leaguePerfectRoundAwards';
+import * as championDb from '../db/leagueChampion';
+import { recalculatePerfectRoundAwardsForLeague } from '../services/perfectRound';
+import {
+  recalculateChampionAwardsForLeague,
+  getPlayoffTeamsFromSeries,
+  getNbaFinalsWinnerTeamId,
+} from '../services/championPicks';
+import { FINALS_MVP_PLAYER_NAMES, canonicalMvpPlayerName } from '../data/finalsMvpPlayers';
 
 const router = Router();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function isRound1Started(): boolean {
-  const series = readStore<PlayoffSeries>('series');
+async function isRound1Started(): Promise<boolean> {
+  const series = await seriesDb.getAllSeries();
   return series.some(
     (s) => s.round === 'firstRound' && (s.status === 'active' || s.status === 'complete'),
   );
@@ -27,8 +40,8 @@ function generateInviteCode(): string {
   return code;
 }
 
-function uniqueInviteCode(): string {
-  const leagues = readStore<League>('leagues');
+async function uniqueInviteCode(): Promise<string> {
+  const leagues = await leaguesDb.getAllLeagues();
   let code: string;
   do {
     code = generateInviteCode();
@@ -38,39 +51,39 @@ function uniqueInviteCode(): string {
 
 // ─── CREATE LEAGUE ────────────────────────────────────────────────────────────
 
+const perfectRoundBonusesSchema = z
+  .object({
+    firstRound: z.number().nonnegative().optional(),
+    semis: z.number().nonnegative().optional(),
+    finals: z.number().nonnegative().optional(),
+    nbaFinals: z.number().nonnegative().optional(),
+  })
+  .optional();
+
 const createLeagueSchema = z.object({
   name: z.string().min(1).max(80),
   password: z.string().min(1).max(128).optional(),
   isPublic: z.boolean().default(true),
   maxMembers: z.number().int().min(20).max(30).default(20),
   baseWinPoints: z.number().positive().default(100),
-  exactScoreBonus: z.number().nonnegative().default(50),
+  exactScoreBonus: z.number().nonnegative().optional().default(0),
   playInWinPoints: z.number().nonnegative().default(50),
   mvpPoints: z.number().nonnegative().default(100),
   mvpDeadline: z.string().datetime(),
+  perfectRoundBonuses: perfectRoundBonusesSchema,
+  championPickDeadline: z.string().datetime().nullable().optional(),
 });
 
-router.post('/', requireAuth, (req: AuthRequest, res: Response) => {
+router.post('/', requireAuth, async (req: AuthRequest, res: Response) => {
   const parsed = createLeagueSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.errors[0].message });
     return;
   }
 
-  const { name, password, isPublic, maxMembers, baseWinPoints, exactScoreBonus, playInWinPoints, mvpPoints, mvpDeadline } = parsed.data;
-  const leagues = readStore<League>('leagues');
-
-  if (leagues.some((l) => l.name.toLowerCase() === name.toLowerCase())) {
-    res.status(409).json({ error: 'League name already taken' });
-    return;
-  }
-
-  const league: League = {
-    id: uuidv4(),
+  const {
     name,
-    inviteCode: uniqueInviteCode(),
-    passwordHash: password ? bcrypt.hashSync(password, 12) : undefined,
-    commissionerId: req.user!.userId,
+    password,
     isPublic,
     maxMembers,
     baseWinPoints,
@@ -78,50 +91,76 @@ router.post('/', requireAuth, (req: AuthRequest, res: Response) => {
     playInWinPoints,
     mvpPoints,
     mvpDeadline,
-    createdAt: new Date().toISOString(),
-  };
+    perfectRoundBonuses,
+    championPickDeadline,
+  } = parsed.data;
 
-  leagues.push(league);
-  writeStore('leagues', leagues);
+  try {
+    if (await leaguesDb.leagueNameExists(name)) {
+      res.status(409).json({ error: 'League name already taken' });
+      return;
+    }
 
-  // Auto-join creator
-  const members = readStore<LeagueMember>('members');
-  members.push({ leagueId: league.id, userId: req.user!.userId, joinedAt: new Date().toISOString() });
-  writeStore('members', members);
+    const league = await leaguesDb.createLeague({
+      id: uuidv4(),
+      name,
+      inviteCode: await uniqueInviteCode(),
+      passwordHash: password ? bcrypt.hashSync(password, 12) : undefined,
+      commissionerId: req.user!.userId,
+      isPublic,
+      maxMembers,
+      baseWinPoints,
+      exactScoreBonus,
+      playInWinPoints,
+      mvpPoints,
+      mvpDeadline,
+      perfectRoundBonuses: perfectRoundBonuses ?? {},
+      championPickDeadline: championPickDeadline ?? null,
+    });
 
-  res.status(201).json(safeLeague(league));
+    // Auto-join creator
+    await leaguesDb.addMember(league.id, req.user!.userId);
+
+    res.status(201).json(safeLeague(league));
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // ─── LIST LEAGUES ─────────────────────────────────────────────────────────────
 
-router.get('/', requireAuth, (req: AuthRequest, res: Response) => {
-  const leagues = readStore<League>('leagues');
-  const members = readStore<LeagueMember>('members');
-  const userId = req.user!.userId;
+router.get('/', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const leagues = await leaguesDb.getLeaguesByUserId(req.user!.userId);
+    res.json(leagues.map(safeLeague));
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
 
-  // Return public leagues + leagues the user is a member of
-  const visible = leagues.filter(
-    (l) => l.isPublic || members.some((m) => m.leagueId === l.id && m.userId === userId),
-  );
-
-  res.json(visible.map(safeLeague));
+// Must be registered before `GET /:id` so "mvp-player-options" is not parsed as a league id.
+router.get('/mvp-player-options', requireAuth, (_req: AuthRequest, res: Response) => {
+  res.json({ players: FINALS_MVP_PLAYER_NAMES });
 });
 
 // ─── GET LEAGUE ───────────────────────────────────────────────────────────────
 
-router.get('/:id', requireAuth, (req: AuthRequest, res: Response) => {
-  const league = readStore<League>('leagues').find((l) => l.id === req.params.id);
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
+router.get('/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+    const memberCheck = await leaguesDb.isMember(league.id, req.user!.userId);
+    if (!league.isPublic && !memberCheck && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+    res.json(safeLeague(league));
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-  const members = readStore<LeagueMember>('members');
-  const isMember = members.some((m) => m.leagueId === league.id && m.userId === req.user!.userId);
-  if (!league.isPublic && !isMember && !req.user!.isAdmin) {
-    res.status(403).json({ error: 'Access denied' });
-    return;
-  }
-  res.json(safeLeague(league));
 });
 
 // ─── JOIN LEAGUE ──────────────────────────────────────────────────────────────
@@ -131,7 +170,7 @@ const joinSchema = z.object({
   password: z.string().optional(),
 });
 
-router.post('/join', requireAuth, (req: AuthRequest, res: Response) => {
+router.post('/join', requireAuth, async (req: AuthRequest, res: Response) => {
   const parsed = joinSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Invalid invite code' });
@@ -139,53 +178,55 @@ router.post('/join', requireAuth, (req: AuthRequest, res: Response) => {
   }
 
   const { inviteCode, password } = parsed.data;
-  const leagues = readStore<League>('leagues');
-  const league = leagues.find((l) => l.inviteCode === inviteCode.toUpperCase());
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
+
+  try {
+    const league = await leaguesDb.getLeagueByInviteCode(inviteCode.toUpperCase());
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+
+    if (await isRound1Started()) {
+      res.status(403).json({ error: 'Cannot join after round 1 has started' });
+      return;
+    }
+
+    if (league.passwordHash && (!password || !bcrypt.compareSync(password, league.passwordHash))) {
+      res.status(401).json({ error: 'Incorrect league password' });
+      return;
+    }
+
+    if (await leaguesDb.isMember(league.id, req.user!.userId)) {
+      res.status(409).json({ error: 'Already a member of this league' });
+      return;
+    }
+
+    const memberCount = await leaguesDb.getMemberCount(league.id);
+    if (memberCount >= league.maxMembers) {
+      res.status(403).json({ error: 'League is full' });
+      return;
+    }
+
+    await leaguesDb.addMember(league.id, req.user!.userId);
+
+    // Notify commissioner
+    const [joiningUser, commissioner] = await Promise.all([
+      usersDb.getUserById(req.user!.userId),
+      usersDb.getUserById(league.commissionerId),
+    ]);
+    if (commissioner?.notificationPreferences.leagueInvite) {
+      await createNotification(league.commissionerId, 'leagueInvite', {
+        leagueId: league.id,
+        leagueName: league.name,
+        joinedUserId: req.user!.userId,
+        joinedUserName: joiningUser?.displayName ?? 'Unknown',
+      });
+    }
+
+    res.json(safeLeague(league));
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-
-  if (isRound1Started()) {
-    res.status(403).json({ error: 'Cannot join after round 1 has started' });
-    return;
-  }
-
-  if (league.passwordHash && (!password || !bcrypt.compareSync(password, league.passwordHash))) {
-    res.status(401).json({ error: 'Incorrect league password' });
-    return;
-  }
-
-  const members = readStore<LeagueMember>('members');
-  const leagueMembers = members.filter((m) => m.leagueId === league.id);
-
-  if (leagueMembers.some((m) => m.userId === req.user!.userId)) {
-    res.status(409).json({ error: 'Already a member of this league' });
-    return;
-  }
-
-  if (leagueMembers.length >= league.maxMembers) {
-    res.status(403).json({ error: 'League is full' });
-    return;
-  }
-
-  members.push({ leagueId: league.id, userId: req.user!.userId, joinedAt: new Date().toISOString() });
-  writeStore('members', members);
-
-  // Notify commissioner
-  const users = readStore<User>('users');
-  const joiningUser = users.find((u) => u.id === req.user!.userId);
-  const commissioner = users.find((u) => u.id === league.commissionerId);
-  if (commissioner?.notificationPreferences.leagueInvite) {
-    createNotification(league.commissionerId, 'leagueInvite', {
-      leagueId: league.id,
-      leagueName: league.name,
-      joinedUserId: req.user!.userId,
-      joinedUserName: joiningUser?.displayName ?? 'Unknown',
-    });
-  }
-
-  res.json(safeLeague(league));
 });
 
 // ─── UPDATE LEAGUE (commissioner) ────────────────────────────────────────────
@@ -193,175 +234,233 @@ router.post('/join', requireAuth, (req: AuthRequest, res: Response) => {
 const updateLeagueSchema = z.object({
   isPublic: z.boolean().optional(),
   maxMembers: z.number().int().min(20).max(30).optional(),
+  perfectRoundBonuses: perfectRoundBonusesSchema,
+  championPickDeadline: z.string().datetime().nullable().optional(),
 });
 
-router.put('/:id', requireAuth, (req: AuthRequest, res: Response) => {
-  const leagues = readStore<League>('leagues');
-  const idx = leagues.findIndex((l) => l.id === req.params.id);
-  if (idx === -1) {
-    res.status(404).json({ error: 'League not found' });
-    return;
+router.put('/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+
+    const isCommissioner = league.commissionerId === req.user!.userId;
+    if (!isCommissioner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'Only the commissioner can update the league' });
+      return;
+    }
+
+    const parsed = updateLeagueSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.errors[0].message });
+      return;
+    }
+
+    const updated = await leaguesDb.updateLeague(req.params.id, parsed.data);
+    if (!updated) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+
+    if (parsed.data.perfectRoundBonuses !== undefined) {
+      const allSeries = await seriesDb.getAllSeries();
+      await recalculatePerfectRoundAwardsForLeague(
+        updated.id,
+        updated.perfectRoundBonuses,
+        allSeries,
+      );
+    }
+
+    res.json(safeLeague(updated));
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-
-  const league = leagues[idx];
-  const isCommissioner = league.commissionerId === req.user!.userId;
-  if (!isCommissioner && !req.user!.isAdmin) {
-    res.status(403).json({ error: 'Only the commissioner can update the league' });
-    return;
-  }
-
-  const parsed = updateLeagueSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.errors[0].message });
-    return;
-  }
-
-  if (parsed.data.isPublic !== undefined) leagues[idx].isPublic = parsed.data.isPublic;
-  if (parsed.data.maxMembers !== undefined) leagues[idx].maxMembers = parsed.data.maxMembers;
-
-  writeStore('leagues', leagues);
-  res.json(safeLeague(leagues[idx]));
 });
 
 // ─── REMOVE MEMBER (commissioner / admin) ────────────────────────────────────
 
-router.delete('/:id/members/:userId', requireAuth, (req: AuthRequest, res: Response) => {
-  const league = readStore<League>('leagues').find((l) => l.id === req.params.id);
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
+router.delete('/:id/members/:userId', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+
+    const isCommissioner = league.commissionerId === req.user!.userId;
+    if (!isCommissioner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'Only the commissioner can remove members' });
+      return;
+    }
+
+    if (req.params.userId === league.commissionerId) {
+      res.status(400).json({ error: 'Cannot remove the commissioner' });
+      return;
+    }
+
+    const removed = await leaguesDb.removeMember(req.params.id, req.params.userId);
+    if (!removed) {
+      res.status(404).json({ error: 'Member not found in this league' });
+      return;
+    }
+
+    res.sendStatus(204);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
+});
 
-  const isCommissioner = league.commissionerId === req.user!.userId;
-  if (!isCommissioner && !req.user!.isAdmin) {
-    res.status(403).json({ error: 'Only the commissioner can remove members' });
-    return;
+// ─── LEAVE LEAGUE (self) ─────────────────────────────────────────────────────
+
+router.post('/:id/leave', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+
+    const userId = req.user!.userId;
+    if (league.commissionerId === userId) {
+      res.status(400).json({
+        error: 'The commissioner cannot leave the league. Transfer ownership is not supported yet.',
+      });
+      return;
+    }
+
+    const member = await leaguesDb.isMember(league.id, userId);
+    if (!member) {
+      res.status(403).json({ error: 'You are not a member of this league' });
+      return;
+    }
+
+    const left = await leaguesDb.leaveLeagueAndClearUserData(league.id, userId);
+    if (!left) {
+      res.status(500).json({ error: 'Failed to leave league' });
+      return;
+    }
+
+    req.app.get('io')?.emit('leaderboard:update', { leagueId: league.id });
+
+    res.sendStatus(204);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
-
-  if (req.params.userId === league.commissionerId) {
-    res.status(400).json({ error: 'Cannot remove the commissioner' });
-    return;
-  }
-
-  const members = readStore<LeagueMember>('members');
-  const filtered = members.filter(
-    (m) => !(m.leagueId === req.params.id && m.userId === req.params.userId),
-  );
-
-  if (filtered.length === members.length) {
-    res.status(404).json({ error: 'Member not found in this league' });
-    return;
-  }
-
-  writeStore('members', filtered);
-  res.sendStatus(204);
 });
 
 // ─── GET MEMBERS ──────────────────────────────────────────────────────────────
 
-router.get('/:id/members', requireAuth, (req: AuthRequest, res: Response) => {
-  const league = readStore<League>('leagues').find((l) => l.id === req.params.id);
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
-  }
+router.get('/:id/members', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
 
-  const members = readStore<LeagueMember>('members').filter((m) => m.leagueId === req.params.id);
-  const users = readStore<User>('users');
+    const members = await leaguesDb.getMembersByLeague(req.params.id);
+    const userList = await Promise.all(members.map((m) => usersDb.getUserById(m.userId)));
 
-  const result = members.map((m) => {
-    const user = users.find((u) => u.id === m.userId);
-    return {
+    const result = members.map((m, i) => ({
       userId: m.userId,
       joinedAt: m.joinedAt,
-      displayName: user?.displayName ?? 'Unknown',
-      avatarUrl: user?.avatarUrl,
+      displayName: userList[i]?.displayName ?? 'Unknown',
+      avatarUrl: userList[i]?.avatarUrl,
       isCommissioner: m.userId === league.commissionerId,
-    };
-  });
+    }));
 
-  res.json(result);
+    res.json(result);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // ─── GET LEADERBOARD ──────────────────────────────────────────────────────────
 
-router.get('/:id/leaderboard', requireAuth, (req: AuthRequest, res: Response) => {
-  const league = readStore<League>('leagues').find((l) => l.id === req.params.id);
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
-  }
-
-  const members = readStore<LeagueMember>('members').filter((m) => m.leagueId === req.params.id);
-  const predictions = readStore<Prediction>('predictions').filter(
-    (p) => p.leagueId === req.params.id,
-  );
-  const mvpPicks = readStore<LeagueMVPPick>('leagueMvpPicks').filter(
-    (pk) => pk.leagueId === req.params.id,
-  );
-  const users = readStore<User>('users');
-
-  const entries = members.map((m) => {
-    const user = users.find((u) => u.id === m.userId);
-    const userPredictions = predictions.filter((p) => p.userId === m.userId);
-    const seriesPoints = userPredictions.reduce((sum, p) => sum + p.totalPoints, 0);
-    const mvpPick = mvpPicks.find((pk) => pk.userId === m.userId);
-    const mvpPoints = mvpPick?.pointsAwarded ?? 0;
-    const totalPoints = seriesPoints + mvpPoints;
-    const correctWinners = userPredictions.filter((p) => p.winnerPoints > 0).length;
-    const correctExactScores = userPredictions.filter((p) => p.exactScorePoints > 0).length;
-    return {
-      userId: m.userId,
-      displayName: user?.displayName ?? 'Unknown',
-      avatarUrl: user?.avatarUrl,
-      totalPoints,
-      correctWinners,
-      correctExactScores,
-    };
-  });
-
-  // Sort descending; ties share the same rank
-  entries.sort((a, b) => b.totalPoints - a.totalPoints);
-
-  let rank = 1;
-  const ranked = entries.map((entry, idx) => {
-    if (idx > 0 && entry.totalPoints < entries[idx - 1].totalPoints) {
-      rank = idx + 1;
+router.get('/:id/leaderboard', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
     }
-    return { rank, ...entry };
-  });
 
-  res.json(ranked);
+    const [members, predictions, mvpPicks, perfectSums, championPicks] = await Promise.all([
+      leaguesDb.getMembersByLeague(req.params.id),
+      predictionsDb.getPredictionsByLeague(req.params.id),
+      mvpPicksDb.getPicksByLeague(req.params.id),
+      getPerfectRoundSumByUser(req.params.id),
+      championDb.getChampionPicksByLeague(req.params.id),
+    ]);
+    const userList = await Promise.all(members.map((m) => usersDb.getUserById(m.userId)));
+
+    const entries = members.map((m, i) => {
+      const user = userList[i];
+      const userPredictions = predictions.filter((p) => p.userId === m.userId);
+      const seriesPoints = userPredictions.reduce((sum, p) => sum + p.totalPoints, 0);
+      const mvpPick = mvpPicks.find((pk) => pk.userId === m.userId);
+      const mvpPoints = mvpPick?.pointsAwarded ?? 0;
+      const perfectPoints = perfectSums.get(m.userId) ?? 0;
+      const champPick = championPicks.find((cp) => cp.userId === m.userId);
+      const championPoints = champPick?.pointsAwarded ?? 0;
+      const totalPoints = seriesPoints + mvpPoints + perfectPoints + championPoints;
+      const correctWinners = userPredictions.filter((p) => p.winnerPoints > 0).length;
+      const correctExactScores = userPredictions.filter((p) => p.exactScorePoints > 0).length;
+      return {
+        userId: m.userId,
+        displayName: user?.displayName ?? 'Unknown',
+        avatarUrl: user?.avatarUrl,
+        totalPoints,
+        correctWinners,
+        correctExactScores,
+      };
+    });
+
+    entries.sort((a, b) => b.totalPoints - a.totalPoints);
+
+    let rank = 1;
+    const ranked = entries.map((entry, idx) => {
+      if (idx > 0 && entry.totalPoints < entries[idx - 1].totalPoints) {
+        rank = idx + 1;
+      }
+      return { rank, ...entry };
+    });
+
+    res.json(ranked);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // ─── GET MVP PICK ─────────────────────────────────────────────────────────────
 
-router.get('/:id/mvp-pick', requireAuth, (req: AuthRequest, res: Response) => {
-  const league = readStore<League>('leagues').find((l) => l.id === req.params.id);
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
-  }
+router.get('/:id/mvp-pick', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
 
-  const members = readStore<LeagueMember>('members');
-  const isMember = members.some((m) => m.leagueId === req.params.id && m.userId === req.user!.userId);
-  if (!isMember && !req.user!.isAdmin) {
-    res.status(403).json({ error: 'Not a member of this league' });
-    return;
-  }
+    const memberCheck = await leaguesDb.isMember(req.params.id, req.user!.userId);
+    if (!memberCheck && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'Not a member of this league' });
+      return;
+    }
 
-  const allPicks = readStore<LeagueMVPPick>('leagueMvpPicks').filter(
-    (pk) => pk.leagueId === req.params.id,
-  );
+    const allPicks = await mvpPicksDb.getPicksByLeague(req.params.id);
+    const deadlinePassed = new Date(league.mvpDeadline) <= new Date();
 
-  const now = new Date();
-  const deadlinePassed = new Date(league.mvpDeadline) <= now;
-
-  if (deadlinePassed || req.user!.isAdmin) {
-    res.json(allPicks);
-  } else {
-    const myPick = allPicks.find((pk) => pk.userId === req.user!.userId);
-    res.json(myPick ? [myPick] : []);
+    if (deadlinePassed || req.user!.isAdmin) {
+      res.json(allPicks);
+    } else {
+      const myPick = allPicks.find((pk) => pk.userId === req.user!.userId);
+      res.json(myPick ? [myPick] : []);
+    }
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
@@ -371,61 +470,182 @@ const mvpPickSchema = z.object({
   playerName: z.string().min(1).max(100),
 });
 
-router.post('/:id/mvp-pick', requireAuth, (req: AuthRequest, res: Response) => {
-  const league = readStore<League>('leagues').find((l) => l.id === req.params.id);
-  if (!league) {
-    res.status(404).json({ error: 'League not found' });
-    return;
-  }
+router.post('/:id/mvp-pick', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
 
-  const members = readStore<LeagueMember>('members');
-  if (!members.some((m) => m.leagueId === req.params.id && m.userId === req.user!.userId)) {
-    res.status(403).json({ error: 'Not a member of this league' });
-    return;
-  }
+    const memberCheck = await leaguesDb.isMember(req.params.id, req.user!.userId);
+    if (!memberCheck) {
+      res.status(403).json({ error: 'Not a member of this league' });
+      return;
+    }
 
-  const now = new Date();
-  if (new Date(league.mvpDeadline) <= now) {
-    res.status(403).json({ error: 'MVP pick deadline has passed' });
-    return;
-  }
+    if (new Date(league.mvpDeadline) <= new Date()) {
+      res.status(403).json({ error: 'MVP pick deadline has passed' });
+      return;
+    }
 
-  const parsed = mvpPickSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.errors[0].message });
-    return;
-  }
+    const parsed = mvpPickSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.errors[0].message });
+      return;
+    }
 
-  const { playerName } = parsed.data;
-  const picks = readStore<LeagueMVPPick>('leagueMvpPicks');
-  const existingIdx = picks.findIndex(
-    (pk) => pk.leagueId === req.params.id && pk.userId === req.user!.userId,
-  );
-  const nowIso = new Date().toISOString();
+    const canonical = canonicalMvpPlayerName(parsed.data.playerName);
+    if (!canonical) {
+      res.status(400).json({ error: 'Player must be chosen from the official MVP candidate list' });
+      return;
+    }
 
-  if (existingIdx !== -1) {
-    picks[existingIdx].playerName = playerName.trim();
-    picks[existingIdx].updatedAt = nowIso;
-    writeStore('leagueMvpPicks', picks);
-    res.json(picks[existingIdx]);
-  } else {
-    const pick: LeagueMVPPick = {
-      id: uuidv4(),
-      leagueId: req.params.id,
-      userId: req.user!.userId,
-      playerName: playerName.trim(),
-      isLocked: false,
-      pointsAwarded: 0,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
-    picks.push(pick);
-    writeStore('leagueMvpPicks', picks);
+    const pick = await mvpPicksDb.upsertMvpPick(req.params.id, req.user!.userId, canonical);
     res.status(201).json(pick);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── CHAMPION PICK (pre-Finals) ───────────────────────────────────────────────
+
+const championPickSchema = z.object({
+  teamId: z.string().uuid(),
+});
+
+const championTeamPointsSchema = z.object({
+  rows: z.array(
+    z.object({
+      teamId: z.string().uuid(),
+      points: z.number().int().positive(),
+    }),
+  ),
+});
+
+router.get('/:id/champion', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+    const memberCheck = await leaguesDb.isMember(req.params.id, req.user!.userId);
+    if (!memberCheck && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'Not a member of this league' });
+      return;
+    }
+
+    const allSeries = await seriesDb.getAllSeries();
+    const playoffTeams = getPlayoffTeamsFromSeries(allSeries);
+    const pointRows = await championDb.getChampionTeamPoints(req.params.id);
+    const nameById = new Map(playoffTeams.map((t) => [t.teamId, t.teamName]));
+    const teamPointsTable = pointRows.map((r) => ({
+      teamId: r.teamId,
+      teamName: nameById.get(r.teamId) ?? 'Team',
+      points: r.points,
+    }));
+
+    const picks = await championDb.getChampionPicksByLeague(req.params.id);
+    const myPick = picks.find((p) => p.userId === req.user!.userId);
+    const dl = league.championPickDeadline;
+    const championDeadlinePassed = dl ? new Date(dl) <= new Date() : false;
+
+    res.json({
+      championPickDeadline: dl ?? null,
+      championDeadlinePassed,
+      playoffTeams,
+      teamPointsTable,
+      myPick: myPick
+        ? { teamId: myPick.teamId, pointsAwarded: myPick.pointsAwarded }
+        : null,
+      nbaChampionTeamId: getNbaFinalsWinnerTeamId(allSeries),
+    });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.post('/:id/champion-pick', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+    const memberCheck = await leaguesDb.isMember(req.params.id, req.user!.userId);
+    if (!memberCheck) {
+      res.status(403).json({ error: 'Not a member of this league' });
+      return;
+    }
+
+    if (!league.championPickDeadline) {
+      res.status(403).json({ error: 'Champion pick is not enabled for this league' });
+      return;
+    }
+    if (new Date(league.championPickDeadline) <= new Date()) {
+      res.status(403).json({ error: 'Champion pick deadline has passed' });
+      return;
+    }
+
+    const parsed = championPickSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.errors[0].message });
+      return;
+    }
+
+    const allSeries = await seriesDb.getAllSeries();
+    const playoffTeams = getPlayoffTeamsFromSeries(allSeries);
+    const allowed = new Set(playoffTeams.map((t) => t.teamId));
+    if (!allowed.has(parsed.data.teamId)) {
+      res.status(400).json({ error: 'Team is not in the playoff field' });
+      return;
+    }
+
+    const pick = await championDb.upsertChampionPick(
+      req.params.id,
+      req.user!.userId,
+      parsed.data.teamId,
+    );
+    const allSeries2 = await seriesDb.getAllSeries();
+    await recalculateChampionAwardsForLeague(req.params.id, allSeries2);
+
+    res.status(201).json(pick);
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.put('/:id/champion-team-points', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const league = await leaguesDb.getLeagueById(req.params.id);
+    if (!league) {
+      res.status(404).json({ error: 'League not found' });
+      return;
+    }
+    const isCommissioner = league.commissionerId === req.user!.userId;
+    if (!isCommissioner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'Only the commissioner can set champion points' });
+      return;
+    }
+
+    const parsed = championTeamPointsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.errors[0].message });
+      return;
+    }
+
+    await championDb.setChampionTeamPoints(req.params.id, parsed.data.rows);
+    const allSeries = await seriesDb.getAllSeries();
+    await recalculateChampionAwardsForLeague(req.params.id, allSeries);
+
+    req.app.get('io')?.emit('leaderboard:update', { leagueId: req.params.id });
+
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
 
 function safeLeague(league: League) {
   const { passwordHash: _ph, ...safe } = league;
