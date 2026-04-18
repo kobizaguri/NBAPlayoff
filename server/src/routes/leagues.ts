@@ -574,6 +574,22 @@ router.get('/:id/champion', requireAuth, async (req: AuthRequest, res: Response)
     const myPick = picks.find((p) => p.userId === req.user!.userId);
     const dl = league.championPickDeadline;
     const championDeadlinePassed = dl ? new Date(dl) <= new Date() : false;
+    const showAllPicks = championDeadlinePassed || req.user!.isAdmin;
+    const memberPicks = showAllPicks
+      ? picks.map((p) => ({
+          userId: p.userId,
+          teamId: p.teamId,
+          pointsAwarded: p.pointsAwarded,
+        }))
+      : myPick
+        ? [
+            {
+              userId: req.user!.userId,
+              teamId: myPick.teamId,
+              pointsAwarded: myPick.pointsAwarded,
+            },
+          ]
+        : [];
 
     res.json({
       championPickDeadline: dl ?? null,
@@ -583,6 +599,7 @@ router.get('/:id/champion', requireAuth, async (req: AuthRequest, res: Response)
       myPick: myPick
         ? { teamId: myPick.teamId, pointsAwarded: myPick.pointsAwarded }
         : null,
+      memberPicks,
       nbaChampionTeamId: getNbaFinalsWinnerTeamId(allSeries),
     });
   } catch {

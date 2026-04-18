@@ -315,10 +315,15 @@ export function LeaguePage() {
       const { data: saved } = await leaguesApi.submitChampionPick(id, championTeamId);
       queryClient.setQueryData<ChampionBoardResponse>(['championBoard', id], (prev) => {
         if (!prev) return prev;
-        return {
-          ...prev,
-          myPick: { teamId: saved.teamId, pointsAwarded: saved.pointsAwarded ?? 0 },
-        };
+        const myPick = { teamId: saved.teamId, pointsAwarded: saved.pointsAwarded ?? 0 };
+        const uid = user?.id;
+        let memberPicks = prev.memberPicks ?? [];
+        if (uid) {
+          memberPicks = memberPicks.some((p) => p.userId === uid)
+            ? memberPicks.map((p) => (p.userId === uid ? { userId: uid, ...myPick } : p))
+            : [...memberPicks, { userId: uid, ...myPick }];
+        }
+        return { ...prev, myPick, memberPicks };
       });
       queryClient.invalidateQueries({ queryKey: ['championBoard', id] });
       queryClient.invalidateQueries({ queryKey: ['leaderboard', id] });
@@ -1055,6 +1060,34 @@ export function LeaguePage() {
               )}
             </div>
           )}
+
+          {championBoard.championDeadlinePassed &&
+            (championBoard.memberPicks ?? []).length > 0 && (
+              <div className="bg-white border border-gray-200 rounded-xl p-5">
+                <h3 className="font-semibold text-gray-800 mb-3">All member champion picks</h3>
+                <ul className="divide-y divide-gray-100">
+                  {(championBoard.memberPicks ?? []).map((pk) => {
+                    const member = members.find((mem) => mem.userId === pk.userId);
+                    const teamName =
+                      championBoard.playoffTeams.find((t) => t.teamId === pk.teamId)?.teamName ??
+                      'Team';
+                    return (
+                      <li key={pk.userId} className="py-2 flex items-center justify-between gap-3">
+                        <span className="text-gray-700">{member?.displayName ?? pk.userId}</span>
+                        <span className="font-medium text-gray-800 text-right">
+                          {teamName}
+                          {pk.pointsAwarded > 0 && (
+                            <span className="ml-2 text-green-600 text-sm">
+                              +{pk.pointsAwarded} pts
+                            </span>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
 
           {isCommissioner && (
             <p className="text-xs text-gray-500 border-t border-gray-100 pt-4">

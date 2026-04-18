@@ -113,6 +113,8 @@ export interface ChampionBoardResponse {
   playoffTeams: { teamId: string; teamName: string }[];
   teamPointsTable: { teamId: string; teamName: string; points: number }[];
   myPick: { teamId: string; pointsAwarded: number } | null;
+  /** After the champion pick deadline (or for admins), every member's pick; before deadline, only the current user's. */
+  memberPicks: { userId: string; teamId: string; pointsAwarded: number }[];
   nbaChampionTeamId: string | null;
 }
 
