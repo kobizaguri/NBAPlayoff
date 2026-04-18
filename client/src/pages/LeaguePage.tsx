@@ -100,6 +100,43 @@ function winnerLabel(s: PlayoffSeries, winnerId: string): string {
   return '—';
 }
 
+/** e.g. "4-2" → "in 6" (total games). */
+function gamesPhraseFromSeriesScore(score: string | undefined): string | null {
+  if (!score) return null;
+  const parts = score.split('-');
+  if (parts.length !== 2) return null;
+  const a = parseInt(parts[0], 10);
+  const b = parseInt(parts[1], 10);
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return `in ${a + b}`;
+}
+
+function LeaguePickCell({ series, pred }: { series: PlayoffSeries; pred: Prediction }) {
+  const winner = winnerLabel(series, pred.predictedWinnerId);
+  const isPlayIn = series.round === 'playIn';
+  const gamesPhrase = !isPlayIn ? gamesPhraseFromSeriesScore(pred.predictedSeriesScore) : null;
+  const scoreRaw = !isPlayIn ? pred.predictedSeriesScore?.trim() : undefined;
+  const lengthPart = gamesPhrase ?? (scoreRaw ? scoreRaw : null);
+  const showMvp = series.seriesMvpPoints > 0 && !!pred.predictedSeriesMvp?.trim();
+
+  const pickedHome = pred.predictedWinnerId === series.homeTeamId;
+  const pickedAway = pred.predictedWinnerId === series.awayTeamId;
+  const winnerColor =
+    pickedHome ? 'text-nba-blue' : pickedAway ? 'text-nba-red' : 'text-slate-800';
+
+  return (
+    <div className="space-y-0.5">
+      <div>
+        <span className={`font-medium ${winnerColor}`}>{winner}</span>
+        {lengthPart ? <span className="text-slate-600"> {lengthPart}</span> : null}
+      </div>
+      {showMvp && (
+        <div className="text-[10px] leading-tight text-indigo-700">Series MVP: {pred.predictedSeriesMvp}</div>
+      )}
+    </div>
+  );
+}
+
 export function LeaguePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -189,13 +226,17 @@ export function LeaguePage() {
 
   const sortedSeries = useMemo(() => [...series].sort(compareSeries), [series]);
 
+  /** League picks grid: drop other members’ preds for series still open (API may send all for admins). */
   const pickMatrix = useMemo(() => {
     const byUserSeries = new Map<string, Prediction>();
     for (const p of predictions) {
+      const s = series.find((sr) => sr.id === p.seriesId);
+      if (!s) continue;
+      if (!seriesLocked(s) && p.userId !== user?.id) continue;
       byUserSeries.set(`${p.userId}:${p.seriesId}`, p);
     }
     return { byUserSeries };
-  }, [predictions]);
+  }, [predictions, series, user?.id]);
 
   const championPointsSorted = useMemo(() => {
     const rows = championBoard?.teamPointsTable ?? [];
@@ -751,46 +792,59 @@ export function LeaguePage() {
 
       {activeTab === 'picks' && isMember && (
         <div className="bg-white border border-gray-200 rounded-xl p-4 overflow-x-auto">
-          <p className="text-sm text-gray-600 mb-3">
-            Picks for other members appear after each series deadline (same time picks lock).
+          <p className="text-sm text-slate-600 mb-3">
+            Your row shows winner, series length (e.g. in 6), and series MVP when applicable; other members
+            stay hidden until that series deadline (when the column locks).
           </p>
           <table className="min-w-full text-xs sm:text-sm border-collapse">
             <thead>
               <tr>
-                <th className="text-left p-2 border-b bg-gray-50 sticky left-0 z-10">Member</th>
+                <th className="text-left p-2 border-b bg-slate-50 sticky left-0 z-10 text-slate-800 font-semibold">
+                  Member
+                </th>
                 {sortedSeries.map((s) => (
                   <th
                     key={s.id}
-                    className="p-2 border-b bg-gray-50 text-left font-normal min-w-[120px] max-w-[160px]"
+                    className="p-2 border-b bg-slate-50 text-left font-normal min-w-[140px] max-w-[200px]"
                   >
-                    <div className="font-medium text-gray-800 truncate" title={s.homeTeamName}>
+                    <div className="font-semibold text-nba-blue truncate" title={s.homeTeamName}>
                       {s.homeTeamName}
                     </div>
-                    <div className="text-gray-400 truncate">vs {s.awayTeamName}</div>
-                    <div className="text-[10px] text-gray-400 uppercase mt-0.5">{s.round}</div>
+                    <div className="truncate mt-0.5 leading-snug">
+                      <span className="text-slate-500 text-[11px] font-medium">vs </span>
+                      <span className="font-semibold text-nba-red" title={s.awayTeamName}>
+                        {s.awayTeamName}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-indigo-700 font-medium uppercase tracking-wide mt-0.5">
+                      {s.round}
+                    </div>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {members.map((m) => (
-                <tr key={m.userId} className="border-b border-gray-100">
-                  <td className="p-2 font-medium text-gray-800 sticky left-0 bg-white z-10 whitespace-nowrap">
+                <tr key={m.userId} className="border-b border-slate-100">
+                  <td className="p-2 font-semibold text-slate-800 sticky left-0 bg-white z-10 whitespace-nowrap">
                     {m.displayName}
                   </td>
                   {sortedSeries.map((s) => {
                     const locked = seriesLocked(s);
                     const pred = pickMatrix.byUserSeries.get(`${m.userId}:${s.id}`);
+                    // Only the viewer’s row before deadline — even admins get full data from the API,
+                    // but this grid stays spoiler-free like other members.
+                    const revealPick = locked || m.userId === user?.id;
                     return (
-                      <td key={s.id} className="p-2 align-top text-gray-700">
-                        {locked ? (
+                      <td key={s.id} className="p-2 align-top text-slate-700">
+                        {revealPick ? (
                           pred ? (
-                            <span>{winnerLabel(s, pred.predictedWinnerId)}</span>
+                            <LeaguePickCell series={s} pred={pred} />
                           ) : (
-                            <span className="text-gray-400">—</span>
+                            <span className="text-slate-400">—</span>
                           )
                         ) : (
-                          <span className="text-gray-400 italic">Hidden</span>
+                          <span className="text-indigo-400/90 italic">Hidden</span>
                         )}
                       </td>
                     );
