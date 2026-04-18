@@ -28,7 +28,7 @@ function commissionerExtrasConfigured(league: League, championBoard: ChampionBoa
   return hasPerfect || !!league.championPickDeadline || nChampTeams > 0;
 }
 
-/** Read-only summary of perfect-round bonuses and champion pick deadline (same for every member). */
+/** Read-only summary of perfect-round bonuses and champion / MVP pick deadlines (same for every member). */
 function LeagueExtrasReadOnlySummary({ league }: { league: League }) {
   return (
     <div className="rounded-lg bg-gray-50 border border-gray-100 px-4 py-3 text-sm text-gray-800 space-y-2">
@@ -70,6 +70,9 @@ function LeagueExtrasReadOnlySummary({ league }: { league: League }) {
             <strong>not set</strong>
           )}{' '}
           {!league.championPickDeadline && <span className="text-gray-500">(champion picks off)</span>}
+        </li>
+        <li>
+          Finals MVP pick deadline: <strong>{new Date(league.mvpDeadline).toLocaleString()}</strong>
         </li>
       </ul>
     </div>
@@ -505,7 +508,8 @@ export function LeaguePage() {
         <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-3">
           <h2 className="font-semibold text-gray-800">League scoring extras</h2>
           <p className="text-xs text-gray-500">
-            Perfect-round bonuses and champion pick deadline. Only the commissioner can change these.
+            Perfect-round bonuses and pick deadlines below. Only the commissioner can change champion extras
+            here.
           </p>
           <LeagueExtrasReadOnlySummary league={league} />
         </div>
@@ -609,16 +613,29 @@ export function LeaguePage() {
                   Clear a number field and save to remove that round&apos;s perfect bonus. Filled fields overwrite
                   saved values.
                 </p>
-                <label className="block text-sm max-w-md">
-                  <span className="text-gray-600">Champion pick deadline</span>
-                  <input
-                    type="datetime-local"
-                    className="input mt-1 w-full"
-                    value={championDlLocal}
-                    onChange={(e) => setChampionDlLocal(e.target.value)}
-                  />
-                  <span className="text-xs text-gray-400">Clear field and save to disable champion picks.</span>
-                </label>
+                <div className="space-y-4 max-w-md">
+                  <label className="block text-sm">
+                    <span className="text-gray-600">Champion pick deadline</span>
+                    <input
+                      type="datetime-local"
+                      className="input mt-1 w-full"
+                      value={championDlLocal}
+                      onChange={(e) => setChampionDlLocal(e.target.value)}
+                    />
+                    <span className="text-xs text-gray-400 block mt-1">
+                      Clear field and save to turn champion picks off.
+                    </span>
+                  </label>
+                  <div className="block text-sm">
+                    <span className="text-gray-600">Finals MVP pick deadline</span>
+                    <p className="mt-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-gray-900 font-medium">
+                      {new Date(league.mvpDeadline).toLocaleString()}
+                    </p>
+                    <span className="text-xs text-gray-400 block mt-1">
+                      Set when the league was created (not editable here).
+                    </span>
+                  </div>
+                </div>
                 <button type="submit" disabled={leagueSettingsSaving} className="btn-primary">
                   {leagueSettingsSaving ? 'Saving…' : 'Save perfect rounds & champion deadline'}
                 </button>
