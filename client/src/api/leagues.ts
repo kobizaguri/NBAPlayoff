@@ -60,7 +60,7 @@ export const leaguesApi = {
   getChampionBoard: (id: string) => api.get<ChampionBoardResponse>(`/leagues/${id}/champion`),
 
   submitChampionPick: (id: string, teamId: string) =>
-    api.post(`/leagues/${id}/champion-pick`, { teamId }),
+    api.post<{ teamId: string; pointsAwarded: number }>(`/leagues/${id}/champion-pick`, { teamId }),
 
   setChampionTeamPoints: (id: string, rows: { teamId: string; points: number }[]) =>
     api.put(`/leagues/${id}/champion-team-points`, { rows }),

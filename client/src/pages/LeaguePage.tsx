@@ -10,7 +10,14 @@ import { Leaderboard } from '../components/league/Leaderboard';
 import { MemberList } from '../components/league/MemberList';
 import { BracketView } from '../components/bracket/BracketView';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
-import type { ChampionBoardResponse, League, PerfectRoundBonuses, PlayoffSeries, Prediction } from '../types';
+import type {
+  ChampionBoardResponse,
+  League,
+  LeagueMVPPick,
+  PerfectRoundBonuses,
+  PlayoffSeries,
+  Prediction,
+} from '../types';
 
 function commissionerExtrasConfigured(league: League, championBoard: ChampionBoardResponse | undefined): boolean {
   const pr = league.perfectRoundBonuses ?? {};
@@ -100,6 +107,7 @@ export function LeaguePage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<Tab>('bracket');
   const [mvpPickInput, setMvpPickInput] = useState('');
+  const [mvpPickEditing, setMvpPickEditing] = useState(false);
   const [mvpPickSaving, setMvpPickSaving] = useState(false);
   const [mvpPickError, setMvpPickError] = useState('');
   const [finalsMvpInput, setFinalsMvpInput] = useState('');
@@ -112,6 +120,7 @@ export function LeaguePage() {
   const [championDlLocal, setChampionDlLocal] = useState('');
   const [leagueSettingsSaving, setLeagueSettingsSaving] = useState(false);
   const [championTeamId, setChampionTeamId] = useState('');
+  const [championPickEditing, setChampionPickEditing] = useState(false);
   const [championSaving, setChampionSaving] = useState(false);
   const [championErr, setChampionErr] = useState('');
   const [championRows, setChampionRows] = useState<{ teamId: string; points: string }[]>([]);
@@ -173,14 +182,10 @@ export function LeaguePage() {
     queryFn: () => leaguesApi.getMvpPlayerOptions().then((r) => r.data.players),
   });
 
-  const myMvpPickName = useMemo(
-    () => mvpPicks.find((pk) => pk.userId === user?.id)?.playerName,
-    [mvpPicks, user?.id],
-  );
-
   useEffect(() => {
-    if (myMvpPickName) setMvpPickInput(myMvpPickName);
-  }, [myMvpPickName]);
+    setMvpPickEditing(false);
+    setChampionPickEditing(false);
+  }, [id]);
 
   const sortedSeries = useMemo(() => [...series].sort(compareSeries), [series]);
 
@@ -228,13 +233,19 @@ export function LeaguePage() {
 
   const handleSubmitMvpPick = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!mvpPickInput.trim()) return;
+    if (!mvpPickInput.trim() || !id || !user?.id) return;
     setMvpPickSaving(true);
     setMvpPickError('');
     try {
-      await leaguesApi.submitMvpPick(id!, mvpPickInput.trim());
+      const { data: saved } = await leaguesApi.submitMvpPick(id, mvpPickInput.trim());
+      queryClient.setQueryData<LeagueMVPPick[]>(['mvpPicks', id], (prev) => {
+        const p = prev ?? [];
+        const others = p.filter((x) => x.userId !== user.id);
+        return [...others, saved];
+      });
       queryClient.invalidateQueries({ queryKey: ['mvpPicks', id] });
-      setMvpPickInput('');
+      setMvpPickInput(saved.playerName);
+      setMvpPickEditing(false);
     } catch (err: unknown) {
       setMvpPickError(
         (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
@@ -297,13 +308,21 @@ export function LeaguePage() {
 
   const handleChampionPick = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!championTeamId) return;
+    if (!championTeamId || !id) return;
     setChampionSaving(true);
     setChampionErr('');
     try {
-      await leaguesApi.submitChampionPick(id!, championTeamId);
+      const { data: saved } = await leaguesApi.submitChampionPick(id, championTeamId);
+      queryClient.setQueryData<ChampionBoardResponse>(['championBoard', id], (prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          myPick: { teamId: saved.teamId, pointsAwarded: saved.pointsAwarded ?? 0 },
+        };
+      });
       queryClient.invalidateQueries({ queryKey: ['championBoard', id] });
       queryClient.invalidateQueries({ queryKey: ['leaderboard', id] });
+      setChampionPickEditing(false);
     } catch (err: unknown) {
       setChampionErr(
         (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
@@ -842,15 +861,33 @@ export function LeaguePage() {
               </p>
               {mvpDeadlinePassed ? (
                 myMvpPick ? (
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="text-gray-800 font-medium">{myMvpPick.playerName}</p>
+                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
+                    <p className="text-sm text-gray-500 mb-1">Your pick</p>
+                    <p className="text-lg font-semibold text-gray-900">{myMvpPick.playerName}</p>
                     {myMvpPick.pointsAwarded > 0 && (
-                      <p className="text-green-600 font-bold mt-1">+{myMvpPick.pointsAwarded} pts</p>
+                      <p className="text-green-600 font-bold mt-2">+{myMvpPick.pointsAwarded} pts</p>
                     )}
                   </div>
                 ) : (
                   <p className="text-gray-500 text-sm">No pick submitted before the deadline.</p>
                 )
+              ) : myMvpPick && !mvpPickEditing ? (
+                <div className="space-y-3">
+                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
+                    <p className="text-sm text-gray-500 mb-1">Your pick</p>
+                    <p className="text-lg font-semibold text-gray-900">{myMvpPick.playerName}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => {
+                      setMvpPickEditing(true);
+                      setMvpPickInput(myMvpPick.playerName);
+                    }}
+                  >
+                    Change pick
+                  </button>
+                </div>
               ) : (
                 <form onSubmit={handleSubmitMvpPick} className="flex flex-col sm:flex-row gap-3">
                   <select
@@ -960,21 +997,41 @@ export function LeaguePage() {
               </p>
               {championBoard.championDeadlinePassed ? (
                 championBoard.myPick ? (
-                  <p className="text-gray-800">
-                    You picked{' '}
-                    <strong>
+                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
+                    <p className="text-sm text-gray-500 mb-1">Your pick</p>
+                    <p className="text-lg font-semibold text-gray-900">
                       {championBoard.playoffTeams.find((t) => t.teamId === championBoard.myPick?.teamId)
                         ?.teamName ?? 'team'}
-                    </strong>
+                    </p>
                     {championBoard.myPick.pointsAwarded > 0 && (
-                      <span className="text-green-600 font-bold ml-2">
+                      <p className="text-green-600 font-bold mt-2">
                         +{championBoard.myPick.pointsAwarded} pts
-                      </span>
+                      </p>
                     )}
-                  </p>
+                  </div>
                 ) : (
                   <p className="text-gray-500 text-sm">No pick before the deadline.</p>
                 )
+              ) : championBoard.myPick && !championPickEditing ? (
+                <div className="space-y-3 max-w-md">
+                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
+                    <p className="text-sm text-gray-500 mb-1">Your pick</p>
+                    <p className="text-lg font-semibold text-gray-900">
+                      {championBoard.playoffTeams.find((t) => t.teamId === championBoard.myPick?.teamId)
+                        ?.teamName ?? 'team'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => {
+                      setChampionPickEditing(true);
+                      setChampionTeamId(championBoard.myPick!.teamId);
+                    }}
+                  >
+                    Change pick
+                  </button>
+                </div>
               ) : (
                 <form onSubmit={handleChampionPick} className="space-y-3 max-w-md">
                   <select
@@ -991,7 +1048,7 @@ export function LeaguePage() {
                     ))}
                   </select>
                   <button type="submit" disabled={championSaving} className="btn-primary">
-                    {championSaving ? 'Saving…' : 'Save pick'}
+                    {championSaving ? 'Saving…' : championBoard.myPick ? 'Update pick' : 'Save pick'}
                   </button>
                   {championErr && <p className="text-red-600 text-sm">{championErr}</p>}
                 </form>
