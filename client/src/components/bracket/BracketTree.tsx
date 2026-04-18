@@ -31,8 +31,8 @@ export function BracketTree({ series, predictionMap, onSelect, baseWinPoints, pl
     series.find((s) => s.round === 'nbaFinals') ?? null;
 
   return (
-    <div className="overflow-x-auto pb-2 -mx-1 sm:-mx-2">
-      <div className="flex items-stretch min-h-[480px] w-full min-w-0">
+    <div className="overflow-x-auto overflow-y-visible pb-2 -mx-1 sm:-mx-2 scroll-smooth touch-pan-x">
+      <div className="flex items-stretch min-h-[min(520px,70vh)] lg:min-h-[480px] w-full min-w-0">
         {/* Conference headers row handled inside columns via label */}
 
         {/* East conference label */}

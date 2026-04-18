@@ -42,7 +42,7 @@ export function SeriesCard({ series, prediction, onClick, baseWinPoints, playInW
     <button
       type="button"
       onClick={onClick}
-      className="w-full min-w-0 text-left bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md hover:border-nba-blue transition-all p-2 sm:p-2.5 group"
+      className="w-full min-w-0 text-left bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md hover:border-nba-blue transition-all p-3 sm:p-2.5 group touch-manipulation active:bg-gray-50"
     >
       <div className="flex items-center justify-between gap-1 mb-1.5 min-w-0">
         {statusBadge(series)}
@@ -56,8 +56,8 @@ export function SeriesCard({ series, prediction, onClick, baseWinPoints, playInW
       </div>
 
       {/* Home team */}
-      <div className={`flex items-center justify-between py-1 ${homeIsWinner ? 'font-bold' : ''}`}>
-        <div className="flex items-center gap-2 min-w-0">
+      <div className={`flex items-center justify-between gap-2 py-1 min-w-0 ${homeIsWinner ? 'font-bold' : ''}`}>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className="text-xs text-gray-400 w-5 shrink-0">#{series.homeTeamSeed}</span>
           <span className={`text-sm truncate ${homeIsWinner ? 'text-gray-900' : 'text-gray-700'}`}>
             {series.homeTeamName}
@@ -74,8 +74,8 @@ export function SeriesCard({ series, prediction, onClick, baseWinPoints, playInW
       </div>
 
       {/* Away team */}
-      <div className={`flex items-center justify-between py-1 ${awayIsWinner ? 'font-bold' : ''}`}>
-        <div className="flex items-center gap-2 min-w-0">
+      <div className={`flex items-center justify-between gap-2 py-1 min-w-0 ${awayIsWinner ? 'font-bold' : ''}`}>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className="text-xs text-gray-400 w-5 shrink-0">#{series.awayTeamSeed}</span>
           <span className={`text-sm truncate ${awayIsWinner ? 'text-gray-900' : 'text-gray-700'}`}>
             {series.awayTeamName}

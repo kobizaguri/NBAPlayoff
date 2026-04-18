@@ -13,11 +13,11 @@ export function BracketPage() {
   if (error) return <p className="text-red-600 text-center py-10">Failed to load bracket.</p>;
 
   return (
-    <div>
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold text-gray-900">NBA Playoff Bracket</h1>
-        <p className="text-gray-500 mt-1 text-sm">
-          Click a series to submit or view your prediction.
+    <div className="min-w-0">
+      <div className="mb-4 sm:mb-6">
+        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">NBA Playoff Bracket</h1>
+        <p className="text-gray-500 mt-1 text-sm leading-snug">
+          Tap or click a series to submit or view your prediction.
         </p>
       </div>
       <BracketView series={series} />

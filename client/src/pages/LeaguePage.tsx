@@ -369,7 +369,7 @@ export function LeaguePage() {
   };
 
   return (
-    <div className="w-full max-w-full mx-auto space-y-6">
+    <div className="w-full max-w-full min-w-0 mx-auto space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <div className="flex items-center gap-2 text-sm text-gray-500 mb-1">
